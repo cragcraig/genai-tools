@@ -279,6 +279,7 @@ def interactive_session(client, image_config, node):
             #           - generate  support for temperature, topn, topp, etc as parameters
             #           - generate  print duration of generate command (and record on node)
             #           - help  list of commands
+            #           - default path or prefix should be time-based to avoid accidental overwriting or forcing constant renaming on the user
         
     except EOFError:
         # Handles Ctrl+D
