@@ -27,8 +27,10 @@ def image_part(img):
 
 class GenNode:
     """Image generation history node"""
-    def __init__(self, parent, prompt, response=None, ref_imgs=[], variations=None):
+    def __init__(self, parent, prompt, response=None, ref_imgs=[], virtualroot=False, variations=None):
         self.level = parent.level + 1 if parent else 0
+        self.turn = parent.turn + 1 if parent and not virtualroot else 0
+        self.virtualroot = virtualroot
         self.local_id = len(parent.children) if parent else 0
         self.parent = parent
         self.children = []
@@ -46,6 +48,15 @@ class GenNode:
         the top-level children of the root node will use without any additions"""
         return GenNode(None, prompt, ref_imgs=ref_imgs)
 
+    def create_virtualroot(self, ref_imgs):
+        if self.is_root():
+            raise RuntimeError('Attempted to create a virtual root as a direct child of a root node')
+        if len(ref_imgs) == 0:
+            raise ValueError('Must provide at least 1 reference image to initialize a virtual root')
+        child = GenNode(self, None, ref_imgs=ref_imgs, virtualroot=True)
+        self.children.append(child)
+        return child
+
     def create_child(self, prompt, ref_imgs=[], variations=None):
         if self.response is None and self.parent:
             raise RuntimeError('Attempted to create child of non-root node that has no response {self.id()}')
@@ -54,7 +65,7 @@ class GenNode:
         return child
 
     def generate(self, client, image_config):
-        if self.is_root():
+        if self.parent is None:
             print("Error: root node is a meta node for which content is never directly generated")
             return
         start_time = time.perf_counter()
@@ -84,23 +95,23 @@ class GenNode:
         return self.parent is None
 
     def id(self, sep='/'):
-        if self.is_root():
+        if self.parent is None:
             return ''
         return f"{self.parent.id(sep=sep)}{sep}{self.local_id}"
 
-    def get_root(self):
-        return self if self.is_root() else self.parent.get_root()
+    def get_root(self, virtualroots=True):
+        return self if (self.is_root() and virtualroots) or self.parent is None else self.parent.get_root()
 
     def history(self):
         if self.is_root():
             return []
         h = self.parent.history()
-        # Prompt
+        # Prompt content
         h.append(types.Content(
             role="user",
             parts=[types.Part(text=self.prompt)] + [image_part(img) for img in self.ref_imgs]
         ))
-        # Response
+        # Response content
         if self.response is not None:
             h.append(self.response.candidates[0].content)  # TODO: needs update if we ever actually support multiple candidates
         return h
@@ -108,10 +119,22 @@ class GenNode:
     def title(self, prompt_length=72):
         if self.parent and self.parent.is_root() and self.prompt == self.parent.prompt:
             return f"{self.local_id}  GENERATE - BASE PROMPT"
-        return f"{'BASE' if self.is_root() else self.local_id}  {self.prompt[0:min(len(self.prompt), max(12, prompt_length - 4 * self.level))]}"
+        id = 'BASE' if self.parent is None else self.local_id
+        root = '[root]' if self.is_root() else ''
+        imgs = f"({len(self.ref_imgs)} img{'s' if len(self.ref_imgs) > 1 else ''})" if self.ref_imgs else ''
+        prompt = self.prompt[0:min(len(self.prompt), max(12, prompt_length - 4 * self.level))]
+        return f"{id}  {root + ' ' if root else ''}{imgs + ' ' if imgs else ''}{prompt + ('...' if len(self.prompt) > len(prompt) else '')}"
 
     def print_summary(self, short=True):
-        print(f"@{'Root' if self.is_root() else 'Node ' + self.id()}    turn = {self.level}  (children = {len(self.children)})")
+        id = ''
+        if self.parent is None:
+            id = 'Root /'
+        elif self.is_root():
+            id = f"VirtualRoot {self.id()}"
+        else:
+            id = f"Node {self.id()}"
+        children = f"  (children = {len(self.children)})" if self.children else ''
+        print(f"@{id}    turn = {self.turn}{children}")
         if short:
             print(textwrap.fill(self.prompt, width=80, initial_indent='| ', subsequent_indent='| '))
             if self.ref_imgs:
@@ -147,10 +170,17 @@ class GenNode:
     def print_tree(self, up=True, down=True):
         if up:
             self.print_ancestor_tree(include_self=False, prefix='   ')
-        self.print_tree_node(prefix='** ')
+        self.print_tree_node(prefix='***')
         if down:
             self.print_descendant_tree(include_self=False, prefix='   ')
 
+    def all_imgs(self):
+        imgs = []
+        if self.ref_imgs:
+            imgs += self.ref_imgs
+        if self.response and self.response.candidates:
+            for candidate in self.response.candidates:
+                imgs += [part.as_image() for part in candidate.content.parts]
 
     def output(self, img_prefix='', hide=False, write=True):
         if not self.response:
@@ -188,7 +218,7 @@ class GenNode:
                         if write:
                             filename = f"{'_'.join(name)}.png"
                             image.save(filename)
-                            print(f"  Image saved as {filename}")
+                            print(f"Image saved as {filename}")
                         n += 1
                         if not hide:
                             image.show()
@@ -226,31 +256,49 @@ def interactive_session(client, image_config, node):
 
             # Switch to the parent node
             elif cmd == "up":
-                if node.is_root():
+                if node.parent is None:
                     print("Error: can't go higher than root")
                     return node, False
                 return node.parent, False
 
             # Switch to a child node
             elif cmd == "down":
-                if len(splits) < 2:
-                    print("Missing argument, expected CHILD_INDEX")
+                if len(node.children) == 0:
+                    print(f"Error: Can't go down from a leaf node")
                     return node, False
-                idx = int(splits[1])
+                idx = 0
+                if len(node.children) == 1:
+                    idx = 0
+                elif len(splits) == 2:
+                    idx = int(splits[1])
+                else:
+                    print(f"Missing argument, expected CHILD_INDEX to specify which of the {len(node.children)} children")
+                    return node, False
                 if idx >= len(node.children):
                     print(f"Error: Out of bounds index {idx}, node has {len(node.children)} children")
                     return node, False
                 return node.children[idx], False
 
-            # Switch to root node
+            # Create a new virtual root based on node
+            elif cmd == "virtualroot":
+                if node.is_root():
+                    print('Error: already a root')
+                    return node, False
+                return node.create_virtualroot(node.all_imgs()), False
+
+            # Switch to current root node
             elif cmd == "root":
                 return node.get_root(), False
+
+            # Switch to base root node
+            elif cmd == "baseroot":
+                return node.get_root(virtualroots=False), False
 
             # Print slice of the tree containing node
             elif cmd == "tree":
                 filter = None if len(splits) < 2 else splits[1].lower()
                 if filter and filter not in ['up', 'down']:
-                    print("Warning: filter argument ignored, if set it must be one of: {up, down}")
+                    print("Warning: filter argument ignored, optional but if set must be one of: {up, down}")
                 print('')
                 node.print_tree(up=False if filter == 'down' else True, down=False if filter == 'up' else True)
                 return node, False
@@ -262,7 +310,7 @@ def interactive_session(client, image_config, node):
                 # Generate a sibling (new child of the parent)
                 if cmd in ["sibling", "retry"]:
                     if node.is_root():
-                        print("Error: can't create siblings for root")
+                        print("Error: can't create siblings for root nodes")
                         return node, False
                     else:
                         if cmd == "retry":
@@ -282,7 +330,7 @@ def interactive_session(client, image_config, node):
                         # Should never happen(tm)
                         raise ValueError('Invalid state: root node with no prompt and no reference images')
                 elif not prompt:
-                    prompt = input(f"[Turn {node.level}] Prompt >> ").strip()
+                    prompt = input(f"[Turn {node.turn}] Prompt >> ").strip()
             else:
                 # Input is not a recognized command
                 if node.is_root() and node.prompt:
@@ -292,8 +340,8 @@ def interactive_session(client, image_config, node):
                     # Invalid command, but maybe it was intended as a generate prompt?
                     if node.is_root():
                         ref_imgs = node.ref_imgs
-                    gencheck = input("Unrecognized as a command. Generate with this as the prompt? (y/n) ").strip().lower()
-                    if gencheck in ['y', 'yes']:
+                    gencheck = input("Unrecognized as a command. Generate as a prompt? (y/n) [default: y]  ").strip().lower()
+                    if gencheck in ['', 'y', 'yes']:
                         prompt = line
                     else:
                         print("ACK: Not a prompt, ignoring invalid command. Try again.")
@@ -326,7 +374,7 @@ def interactive_session(client, image_config, node):
 
 # Simple autocomplete function
 def completer(text, state):
-    options = [i for i in ['exit', 'quit', 'sibling', 'retry', 'generate', 'history', 'down', 'up', 'root', 'tree', 'tree up', 'tree down', 'show'] if i.startswith(text)]
+    options = [i for i in ['exit', 'quit', 'sibling', 'retry', 'generate', 'history', 'down', 'up', 'virtualroot', 'root', 'baseroot', 'tree', 'tree up', 'tree down', 'show'] if i.startswith(text)]
     if state < len(options):
         return options[state]
     else:
