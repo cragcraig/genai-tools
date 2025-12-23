@@ -3,6 +3,8 @@ import readline
 import textwrap
 import os
 import io
+import time
+import uuid
 from google import genai
 from google.genai import types
 from PIL import Image
@@ -34,6 +36,7 @@ class GenNode:
         self.ref_imgs = ref_imgs
         self.response = response
         self.variations = variations
+        self.elapsed_sec = None
 
     @classmethod
     def new_root(cls, prompt, ref_imgs=[]):
@@ -54,12 +57,15 @@ class GenNode:
         if self.is_root():
             print("Error: root node is a meta node for which content is never directly generated")
             return
-        self._set_response(client.models.generate_content(
-                model=MODEL_ID,
-                contents=self.history(),
-                config=self._gen_content_config(image_config)
-            )
+        start_time = time.perf_counter()
+        content = client.models.generate_content(
+            model=MODEL_ID,
+            contents=self.history(),
+            config=self._gen_content_config(image_config)
         )
+        elapsed_sec = time.perf_counter() - start_time
+        self._set_response(content, elapsed_sec)
+        return elapsed_sec
 
     def _gen_content_config(self, image_config):
         return types.GenerateContentConfig(
@@ -68,10 +74,11 @@ class GenNode:
             candidate_count=self.variations
         )
 
-    def _set_response(self, response):
+    def _set_response(self, response, elapsed_sec):
         if self.response is not None:
             raise RuntimeError('Attempted to overwrite response for node {self.id()}')
         self.response = response
+        self.elapsed_sec = elapsed_sec
 
     def is_root(self):
         return self.parent is None
@@ -98,15 +105,15 @@ class GenNode:
             h.append(self.response.candidates[0].content)  # TODO: needs update if we ever actually support multiple candidates
         return h
 
-    def title(self, prompt_length=65):
-        if self.parent and self.parent.is_root():
-            return f"[{self.local_id}] GENERATE - BASE PROMPT"
-        return f"[{'BASE' if self.is_root() else self.local_id}] {self.prompt[0:min(len(self.prompt), max(12, prompt_length - 4 * self.level))]}"
+    def title(self, prompt_length=72):
+        if self.parent and self.parent.is_root() and self.prompt == self.parent.prompt:
+            return f"{self.local_id}  GENERATE - BASE PROMPT"
+        return f"{'BASE' if self.is_root() else self.local_id}  {self.prompt[0:min(len(self.prompt), max(12, prompt_length - 4 * self.level))]}"
 
     def print_summary(self, short=True):
-        print(f"@Node {'/' if self.is_root() else self.id()}    turn = {self.level}  (children = {len(self.children)})")
+        print(f"@{'Root' if self.is_root() else 'Node ' + self.id()}    turn = {self.level}  (children = {len(self.children)})")
         if short:
-            print(textwrap.fill(self.prompt, width=80, initial_indent='  ', subsequent_indent='  '))
+            print(textwrap.fill(self.prompt, width=80, initial_indent='| ', subsequent_indent='| '))
             if self.ref_imgs:
                 print(f" +{len(self.ref_imgs)} reference images")
         else:
@@ -118,7 +125,7 @@ class GenNode:
         print(textwrap.fill(self.prompt, width=80, initial_indent='  ', subsequent_indent='  '))
         print('')
 
-    def print_tree_node(self, prefix=' '):
+    def print_tree_node(self, prefix=''):
         indent = ' ' * (4 * self.level)
         print(prefix + indent + self.title())
 
@@ -127,6 +134,9 @@ class GenNode:
             self.parent.print_ancestor_tree(prefix=prefix)
         if include_self:
             self.print_tree_node(prefix=prefix)
+            if len(self.children) > 1:
+                indent = ' ' * (4 * (self.level + 1))
+                print(prefix + indent + f"+ {len(self.children) - 1} other children")
 
     def print_descendant_tree(self, include_self=True, prefix=''):
         if include_self:
@@ -176,7 +186,9 @@ class GenNode:
                         if n > 0:
                             name.append(f"p{n}")
                         if write:
-                            image.save(f"{'_'.join(name)}.png")
+                            filename = f"{'_'.join(name)}.png"
+                            image.save(filename)
+                            print(f"  Image saved as {filename}")
                         n += 1
                         if not hide:
                             image.show()
@@ -193,6 +205,9 @@ def interactive_session(client, image_config, node):
             print("Goodbye!")
             return None, False
 
+        prompt = None
+        ref_imgs = []
+        variations = None
         if line:
             splits = line.split()
             cmd = splits[0].lower()
@@ -241,45 +256,63 @@ def interactive_session(client, image_config, node):
                 return node, False
 
             # Generate a child
-            elif cmd in ["generate", "sibling"]:
-                variations = None if len(splits) < 2 else int(splits[1])
+            elif cmd in ["generate", "sibling", "retry"]:
+                if len(splits) == 2:
+                    variations = int(splits[1])
                 # Generate a sibling (new child of the parent)
-                if cmd == "sibling":
+                if cmd in ["sibling", "retry"]:
                     if node.is_root():
                         print("Error: can't create siblings for root")
                         return node, False
                     else:
+                        if cmd == "retry":
+                            prompt = node.prompt
+                            ref_imgs = node.ref_imgs
                         node = node.parent
-                prompt = None
-                ref_imgs = []
                 # Generate a child
                 if node.is_root():
-                    print("INFO: Starting a new top-level generate using the base prompt")
-                    prompt = node.prompt
                     ref_imgs = node.ref_imgs
-                else:
+                    if node.prompt:
+                        print("INFO: Starting a new top-level generate using the base prompt")
+                        prompt = node.prompt
+                    elif ref_imgs:
+                        print("INFO: Starting a new top-level generate using the provided images")
+                        prompt = input(f"[start] Prompt >> ").strip()
+                    else:
+                        # Should never happen(tm)
+                        raise ValueError('Invalid state: root node with no prompt and no reference images')
+                elif not prompt:
                     prompt = input(f"[Turn {node.level}] Prompt >> ").strip()
-
-                # Do the generate
-                if prompt:
-                    assert(variations is None) # Multiple candidates is not supported by nano banana models
-                    child = node.create_child(prompt, ref_imgs=ref_imgs, variations=variations)
-                    print("Generating...")
-                    child.generate(client, image_config)
-                    return child, True
-                else:
-                    print("Generate canceled (empty prompt)")
             else:
-                # Invalid command
-                print("Warning: Invalid command, ignored")
+                # Input is not a recognized command
+                if node.is_root() and node.prompt:
+                    # Invalid command, but it's also not valid to use a generate prompt for this node
+                    print("Warning: Invalid command, ignored. Try again.")
+                else:
+                    # Invalid command, but maybe it was intended as a generate prompt?
+                    if node.is_root():
+                        ref_imgs = node.ref_imgs
+                    gencheck = input("Unrecognized as a command. Generate with this as the prompt? (y/n) ").strip().lower()
+                    if gencheck in ['y', 'yes']:
+                        prompt = line
+                    else:
+                        print("ACK: Not a prompt, ignoring invalid command. Try again.")
+
+            # Do the generate
+            if prompt:
+                assert(variations is None) # Multiple candidates is not supported by nano banana models
+                child = node.create_child(prompt, ref_imgs=ref_imgs, variations=variations)
+                print("Generating...  ", end='', flush=True)
+                elapsed_sec = child.generate(client, image_config)
+                print(f"{elapsed_sec:.1f} seconds")
+                return child, True
+            elif prompt == '':
+                print("Generate canceled (empty prompt)")
 
             # TODO:
             #           - virtualroot  create a new child node that uses the current node content but acts like none of its ancestors exist
-            #           - retry  create a sibling using the identical prompt
             #           - generate  support for temperature, topn, topp, etc as parameters
-            #           - generate  print duration of generate command (and record on node)
             #           - help  list of commands
-            #           - default path or prefix should be time-based to avoid accidental overwriting or forcing constant renaming on the user
         
     except EOFError:
         # Handles Ctrl+D
@@ -293,7 +326,7 @@ def interactive_session(client, image_config, node):
 
 # Simple autocomplete function
 def completer(text, state):
-    options = [i for i in ['exit', 'quit', 'sibling', 'generate', 'history', 'down', 'up', 'root', 'tree', 'tree up', 'tree down', 'show'] if i.startswith(text)]
+    options = [i for i in ['exit', 'quit', 'sibling', 'retry', 'generate', 'history', 'down', 'up', 'root', 'tree', 'tree up', 'tree down', 'show'] if i.startswith(text)]
     if state < len(options):
         return options[state]
     else:
@@ -301,20 +334,20 @@ def completer(text, state):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog='nano-banana')
-    parser.add_argument('--path', default='out')
+    parser.add_argument('--path', default=None, help='Directory to write output files, if not set a unique subdirectory will be made')
     parser.add_argument('--prefix', default='img')
-    parser.add_argument('--resolution', choices=["1K", "2K", "4K"], default="2K")
+    parser.add_argument('--resolution', choices=["1K", "2K", "4K"], default="1K")
     parser.add_argument('--aspect_ratio', choices=["1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"], default="16:9")
-    parser.add_argument('--ref', nargs='*', default=[])
-    parser.add_argument('--hide', action='store_true', help='Skip showing images when they\'re generated')
-    parser.add_argument('prompt')
+    parser.add_argument('--ref', nargs='*', default=[], help='Reference images (optional)')
+    parser.add_argument('--noshow', action='store_true', help='Skip showing images when they\'re generated')
+    parser.add_argument('--prompt', default='', help='Base prompt, optional if reference image(s) are provided')
     args = parser.parse_args()
 
     # Register the completer function and set the 'Tab' key for completion
     readline.set_completer(completer)
     readline.parse_and_bind("tab: complete")
 
-    # Load any reference images so that we can fail early if they're missing
+    # Load any reference images now so that we can fail early if they're missing
     ref_imgs=[ Image.open(path) for path in args.ref ]
 
     # Define the image config
@@ -324,28 +357,35 @@ if __name__ == "__main__":
     )
 
     # Prep output path
-    if args.path:
-        os.makedirs(args.path, exist_ok=True)
-    img_prefix = os.path.join(args.path, args.prefix)
+    path = args.path
+    if path is None:
+        path = 'out-' + str(uuid.uuid4())[0:4]
+        print(f"Output path set to:  {path}")
+    if path:
+        os.makedirs(path, exist_ok=True if args.path else False)
+    img_prefix = os.path.join(path, args.prefix)
+
+    # Input base prompt, if necessary
+    prompt = args.prompt
+    if not args.prompt and not args.ref:
+        prompt = input(f"[base] Prompt >> ").strip()
+    if not prompt:
+        print('Error: Empty prompt, exiting')
+        exit(0);
 
     # Gemini
     with genai.Client() as client:
-        root = GenNode.new_root(args.prompt, ref_imgs=ref_imgs)
+        root = GenNode.new_root(prompt, ref_imgs=ref_imgs)
         node = root
         prev_node = None
-        # Always start by generating one child of the root node
-        # print("Generating initial image...")
-        # node = root.create_child(root.prompt, ref_imgs=root.ref_imgs)
-        # node.generate(client, image_config)
-        # node.output(img_prefix)
-        # Then switch over to the interactive prompt
+        # Start the interactive command loop
         print("\n--- Interactive Nano Banana Shell (type 'exit' or Ctrl+D to quit) ---\n")
         while node is not None:
             if node != prev_node:
                 node.print_summary(short=True)
                 prev_node = node
-            print('')
+                print('')
             node, out = interactive_session(client, image_config, node)
             if out and node is not None:
-                node.output(img_prefix, hide=args.hide)
+                node.output(img_prefix, hide=args.noshow)
             print('')
