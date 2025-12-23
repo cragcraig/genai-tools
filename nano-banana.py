@@ -388,7 +388,7 @@ if __name__ == "__main__":
     parser.add_argument('--path', default=None, help='Directory to write output files, if not set a unique subdirectory will be made')
     parser.add_argument('--prefix', default='img')
     parser.add_argument('--resolution', choices=["1K", "2K", "4K"], default="1K")
-    parser.add_argument('--aspect_ratio', choices=["1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"], default="16:9")
+    parser.add_argument('--aspect_ratio', choices=[None, "1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"], default=None)
     parser.add_argument('--ref', nargs='*', default=[], help='Reference images (optional)')
     parser.add_argument('--noshow', action='store_true', help='Skip showing images when they\'re generated')
     parser.add_argument('--prompt', default='', help='Base prompt, optional if reference image(s) are provided')
@@ -413,9 +413,9 @@ if __name__ == "__main__":
         print('Provide an initial prompt to generate')
         print('  example: Baby t-rex on a small pacific atoll,following in its mother\'s huge footprints,Studio Ghibli inspired,cinematic lighting\n')
         prompt = input(f"Prompt >> ").strip()
-    if not prompt:
-        print('Error: Empty prompt, exiting')
-        exit(0);
+        if not prompt:
+            print('Error: Empty prompt, exiting')
+            exit(0);
 
     # Prep output path
     path = args.path
