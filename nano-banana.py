@@ -34,6 +34,7 @@ class GenNode:
         self.local_id = len(parent.children) if parent else 0
         self.parent = parent
         self.children = []
+        assert prompt is not None, 'Prompt must not be None'
         self.prompt = prompt
         self.ref_imgs = ref_imgs
         self.response = response
@@ -51,14 +52,14 @@ class GenNode:
     def create_virtualroot(self, ref_imgs):
         if self.is_root():
             raise RuntimeError('Attempted to create a virtual root as a direct child of a root node')
-        if len(ref_imgs) == 0:
+        if not ref_imgs:
             raise ValueError('Must provide at least 1 reference image to initialize a virtual root')
-        child = GenNode(self, None, ref_imgs=ref_imgs, virtualroot=True)
+        child = GenNode(self, '', ref_imgs=ref_imgs, virtualroot=True)
         self.children.append(child)
         return child
 
     def create_child(self, prompt, ref_imgs=[], variations=None):
-        if self.response is None and self.parent:
+        if self.response is None and not self.is_root():
             raise RuntimeError('Attempted to create child of non-root node that has no response {self.id()}')
         child = GenNode(self, prompt, ref_imgs=ref_imgs, variations=variations)
         self.children.append(child)
@@ -92,7 +93,7 @@ class GenNode:
         self.elapsed_sec = elapsed_sec
 
     def is_root(self):
-        return self.parent is None
+        return self.parent is None or self.virtualroot
 
     def id(self, sep='/'):
         if self.parent is None:
@@ -118,14 +119,17 @@ class GenNode:
 
     def title(self, prompt_length=72):
         if self.parent and self.parent.is_root() and self.prompt == self.parent.prompt:
-            return f"{self.local_id}  GENERATE - BASE PROMPT"
+            return f"{self.local_id}  [generate - root prompt]"
         id = 'BASE' if self.parent is None else self.local_id
         root = '[root]' if self.is_root() else ''
         imgs = f"({len(self.ref_imgs)} img{'s' if len(self.ref_imgs) > 1 else ''})" if self.ref_imgs else ''
         prompt = self.prompt[0:min(len(self.prompt), max(12, prompt_length - 4 * self.level))]
         return f"{id}  {root + ' ' if root else ''}{imgs + ' ' if imgs else ''}{prompt + ('...' if len(self.prompt) > len(prompt) else '')}"
 
-    def print_summary(self, short=True):
+    def print_summary(self, full=True):
+        if full and not self.is_root() and not self.parent.is_root():
+            self.parent.print_summary(full=True)
+            print('|')
         id = ''
         if self.parent is None:
             id = 'Root /'
@@ -133,14 +137,13 @@ class GenNode:
             id = f"VirtualRoot {self.id()}"
         else:
             id = f"Node {self.id()}"
-        children = f"  (children = {len(self.children)})" if self.children else ''
-        print(f"@{id}    turn = {self.turn}{children}")
-        if short:
-            print(textwrap.fill(self.prompt, width=80, initial_indent='| ', subsequent_indent='| '))
-            if self.ref_imgs:
-                print(f" +{len(self.ref_imgs)} reference images")
-        else:
-            self.print_prompt_history()
+        if not full:
+            children = f"  (children = {len(self.children)})" if self.children else ''
+            print(f"@{id}    turn = {self.turn}{children}")
+        if self.ref_imgs:
+            print(f"+ {len(self.ref_imgs)} reference image{'s' if len(self.ref_imgs) > 1 else ''}")
+        prompt = self.prompt if self.prompt else '[empty prompt]'
+        print(textwrap.fill(prompt, width=80, initial_indent='| ', subsequent_indent='| '))
 
     def print_prompt_history(self):
         if self.parent:
@@ -153,7 +156,7 @@ class GenNode:
         print(prefix + indent + self.title())
 
     def print_ancestor_tree(self, include_self=True, prefix=''):
-        if not self.is_root():
+        if self.parent:
             self.parent.print_ancestor_tree(prefix=prefix)
         if include_self:
             self.print_tree_node(prefix=prefix)
@@ -170,7 +173,7 @@ class GenNode:
     def print_tree(self, up=True, down=True):
         if up:
             self.print_ancestor_tree(include_self=False, prefix='   ')
-        self.print_tree_node(prefix='***')
+        self.print_tree_node(prefix='** ')
         if down:
             self.print_descendant_tree(include_self=False, prefix='   ')
 
@@ -181,6 +184,7 @@ class GenNode:
         if self.response and self.response.candidates:
             for candidate in self.response.candidates:
                 imgs += [part.as_image() for part in candidate.content.parts]
+        return imgs
 
     def output(self, img_prefix='', hide=False, write=True):
         if not self.response:
@@ -248,10 +252,9 @@ def interactive_session(client, image_config, node):
                 return node, False
 
             # Print prompt history for this node
-            elif cmd == "history":
+            elif cmd == "context":
                 print('')
-                node.print_summary(short=True)
-                print('')
+                node.print_summary(full=True)
                 return node, False
 
             # Switch to the parent node
@@ -303,7 +306,7 @@ def interactive_session(client, image_config, node):
                 node.print_tree(up=False if filter == 'down' else True, down=False if filter == 'up' else True)
                 return node, False
 
-            # Generate a child
+            # Generate a new node
             elif cmd in ["generate", "sibling", "retry"]:
                 if len(splits) == 2:
                     variations = int(splits[1])
@@ -321,10 +324,10 @@ def interactive_session(client, image_config, node):
                 if node.is_root():
                     ref_imgs = node.ref_imgs
                     if node.prompt:
-                        print("INFO: Starting a new top-level generate using the base prompt")
+                        print("INFO: Starting a new top-level generate using root prompt")
                         prompt = node.prompt
                     elif ref_imgs:
-                        print("INFO: Starting a new top-level generate using the provided images")
+                        print(f"INFO: Starting a new top-level generate using the provided image{'s' if len(ref_imgs) > 1 else ''}")
                         prompt = input(f"[start] Prompt >> ").strip()
                     else:
                         # Should never happen(tm)
@@ -374,7 +377,7 @@ def interactive_session(client, image_config, node):
 
 # Simple autocomplete function
 def completer(text, state):
-    options = [i for i in ['exit', 'quit', 'sibling', 'retry', 'generate', 'history', 'down', 'up', 'virtualroot', 'root', 'baseroot', 'tree', 'tree up', 'tree down', 'show'] if i.startswith(text)]
+    options = [i for i in ['exit', 'quit', 'sibling', 'retry', 'generate', 'context', 'down', 'up', 'virtualroot', 'root', 'baseroot', 'tree', 'tree up', 'tree down', 'show'] if i.startswith(text)]
     if state < len(options):
         return options[state]
     else:
@@ -404,6 +407,16 @@ if __name__ == "__main__":
         image_size=args.resolution
     )
 
+    # Input base prompt, if necessary
+    prompt = args.prompt
+    if not args.prompt and not args.ref:
+        print('Provide an initial prompt to generate')
+        print('  example: Baby t-rex on a small pacific atoll,following in its mother\'s huge footprints,Studio Ghibli inspired,cinematic lighting\n')
+        prompt = input(f"Prompt >> ").strip()
+    if not prompt:
+        print('Error: Empty prompt, exiting')
+        exit(0);
+
     # Prep output path
     path = args.path
     if path is None:
@@ -412,14 +425,6 @@ if __name__ == "__main__":
     if path:
         os.makedirs(path, exist_ok=True if args.path else False)
     img_prefix = os.path.join(path, args.prefix)
-
-    # Input base prompt, if necessary
-    prompt = args.prompt
-    if not args.prompt and not args.ref:
-        prompt = input(f"[base] Prompt >> ").strip()
-    if not prompt:
-        print('Error: Empty prompt, exiting')
-        exit(0);
 
     # Gemini
     with genai.Client() as client:
@@ -430,7 +435,7 @@ if __name__ == "__main__":
         print("\n--- Interactive Nano Banana Shell (type 'exit' or Ctrl+D to quit) ---\n")
         while node is not None:
             if node != prev_node:
-                node.print_summary(short=True)
+                node.print_summary(full=False)
                 prev_node = node
                 print('')
             node, out = interactive_session(client, image_config, node)
