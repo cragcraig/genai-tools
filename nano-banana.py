@@ -315,6 +315,8 @@ class GenNode:
 def prompt_yn(prompt):
     return input(f"{prompt} (y/n) [default: y]  ").strip().lower() in ['', 'y', 'yes']
 
+# The command interpreter is a bit gross but manageable so not worth
+# refactoring unless/until the set of commands will be growing.
 def interactive_session(client, image_config, node):
     try:
         # Read an individual line from the user
