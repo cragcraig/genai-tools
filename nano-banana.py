@@ -11,6 +11,50 @@ from PIL import Image
 
 MODEL_ID = "gemini-3-pro-image-preview"
 
+HELP_TEXT = """
+tl;dr:
+
+    An interactive REPL loop for iterative image generation with Nano Banana
+
+How It Works:
+
+    Construct a directed tree of sequential Prompt -> Generated Image turns as
+    you iteratively explore and refineme the generated images.
+
+    The resulting tree is essentially an undo/redo history supporting arbitrary
+    resumption from any decision point in the conversation. Each branch in the
+    tree is an alternate timelines of the conversation.
+
+    Generating a new image creates a new child node in the tree. The context
+    used for generating this image will be the coversation history and image
+    context since the last root node, following the conversation path up the
+    chain of nodes leading to the new child node.
+
+    Commands enable arbitrarily traversing the conversation tree and branching
+    new child nodes (aka image generation) from any point in the coversation.
+
+Command Glossary:
+
+    Tree Traversal
+        - up [top|root|LEVELS]
+        - down [CHILD_INDEX]
+
+    Print State
+        - show
+        - context
+        - tree [up|down]
+
+    Generate Images
+        - generate [VARIATIONS]
+            (or simply enter a prompt that doesn't match any command)
+        - sibling [VARIATIONS]
+        - retry [VARIATIONS]
+        - root
+
+    General
+        - help / ?
+        - exit / quit"""
+
 def pil_image_to_png_bytes(img):
     """Helper to convert PIL Image to bytes for the API."""
     with io.BytesIO() as output:
@@ -268,6 +312,8 @@ class GenNode:
                 if n == 0:
                     print("Error: Generation completed normally, but no image found in content for {self.id()}.")
 
+def prompt_yn(prompt):
+    return input(f"{prompt} (y/n) [default: y]  ").strip().lower() in ['', 'y', 'yes']
 
 def interactive_session(client, image_config, node):
     try:
@@ -285,6 +331,11 @@ def interactive_session(client, image_config, node):
         if line:
             splits = line.split()
             cmd = splits[0].lower()
+
+            # Help message
+            if cmd in ["help", "?"]:
+                print(HELP_TEXT);
+                return node, False
 
             # Show the content at the node
             if cmd == "show":
@@ -304,7 +355,7 @@ def interactive_session(client, image_config, node):
                     return node.get_root(virtualroots=True if splits[1] == 'root' else False), False
                 lvls = int(splits[1]) if len(splits) == 2 else 1
                 if not lvls or lvls < 1 or len(splits) > 2:
-                    print(f"Error: Unexpected parameter(s), expecting:  up [root | top | NUM_LEVELS]")
+                    print('Error: Unexpected parameter(s), expecting:  up [{top|root|LEVELS}]')
                     return node, False
                 for i in range(0, lvls):
                     if node.parent is None:
@@ -333,7 +384,7 @@ def interactive_session(client, image_config, node):
                 return node.children[idx], False
 
             # Create a new virtual root based on node
-            elif cmd == "newroot":
+            elif cmd == "root":
                 if node.is_root():
                     print('Error: already a root')
                     return node, False
@@ -343,7 +394,7 @@ def interactive_session(client, image_config, node):
             elif cmd == "tree":
                 filter = None if len(splits) < 2 else splits[1].lower()
                 if filter and filter not in ['up', 'down']:
-                    print("Warning: filter argument ignored, optional but if set must be one of: {up, down}")
+                    print('Warning: filter argument ignored, optional but if set must be one of: {up, down}')
                 print('')
                 node.print_tree(up=False if filter == 'down' else True, down=False if filter == 'up' else True)
                 return node, False
@@ -385,8 +436,7 @@ def interactive_session(client, image_config, node):
                     # Invalid command, but maybe it was intended as a generate prompt?
                     if node.is_root():
                         ref_imgs = node.ref_imgs
-                    gencheck = input("Unrecognized as a command. Generate as a prompt? (y/n) [default: y]  ").strip().lower()
-                    if gencheck in ['', 'y', 'yes']:
+                    if prompt_yn("Unrecognized as a command. Generate as a prompt?"):
                         prompt = line
                     else:
                         print("ACK: Not a prompt, ignoring invalid command. Try again.")
@@ -405,7 +455,6 @@ def interactive_session(client, image_config, node):
             # TODO:
             #           - generate  support for seed, temperature, topn, topp, etc as parameters
             #           - help  list of commands
-        
     except EOFError:
         # Handles Ctrl+D
         print("\nExiting...")
@@ -418,7 +467,7 @@ def interactive_session(client, image_config, node):
 
 # Simple autocomplete function
 def completer(text, state):
-    options = [i for i in ['exit', 'quit', 'sibling', 'retry', 'generate', 'context', 'down', 'up', 'up root', 'up top', 'newroot', 'tree', 'tree up', 'tree down', 'show'] if i.startswith(text)]
+    options = [i for i in ['help', '?', 'exit', 'quit', 'sibling', 'retry', 'generate', 'context', 'down', 'up', 'up root', 'up top', 'root', 'tree', 'tree up', 'tree down', 'show'] if i.startswith(text)]
     if state < len(options):
         return options[state]
     else:
@@ -427,12 +476,12 @@ def completer(text, state):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog='nano-banana')
     parser.add_argument('--path', default=None, help='Directory to write output files, if not set a unique subdirectory will be made')
-    parser.add_argument('--prefix', default='img')
-    parser.add_argument('--resolution', choices=["1K", "2K", "4K"], default="1K")
+    parser.add_argument('--prefix', default='img', help='Prefix for output image filenames')
+    parser.add_argument('--resolution', choices=["1K", "2K", "4K"], default="1K", help='Defaults to 1K')
     parser.add_argument('--aspect_ratio', choices=[None, "1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"], default=None)
-    parser.add_argument('--ref', nargs='*', default=[], help='Reference images (optional)')
-    parser.add_argument('--noshow', action='store_true', help='Skip showing images when they\'re generated')
-    parser.add_argument('--prompt', default='', help='Base prompt, optional if reference image(s) are provided')
+    parser.add_argument('--ref', nargs='*', default=[], help='(optional) Reference images to include in initial context')
+    parser.add_argument('--noshow', action='store_true', help='Skip displaying image results after each generation completes')
+    parser.add_argument('--prompt', default='', help='Initial generate prompt, optional if reference image(s) are provided')
     args = parser.parse_args()
 
     # Register the completer function and set the 'Tab' key for completion
@@ -451,12 +500,12 @@ if __name__ == "__main__":
     # Prompt for base prompt, if necessary
     prompt = args.prompt
     if not args.prompt and not args.ref:
-        print('Provide an initial prompt to generate')
+        print('Provide a prompt for initial context')
         print('  example: Baby t-rex on a small pacific atoll. T-rex don\'t have feathers.,following in its mother\'s huge footprints,Studio Ghibli inspired,cinematic lighting\n')
         prompt = input(f"Prompt >> ").strip()
         if not prompt:
-            print('Error: Empty prompt, exiting')
-            exit(0);
+            print('Error: Empty root context (no initial prompt nor reference images), aborting...')
+            exit(1);
 
     # Prep output path and ensure directory exists
     path = args.path
@@ -467,7 +516,7 @@ if __name__ == "__main__":
         os.makedirs(path, exist_ok=True if args.path else False)
     img_prefix = os.path.join(path, args.prefix)
 
-    # Gemini loop
+    # Gemini
     with genai.Client() as client:
         root = GenNode.new_root(prompt, ref_imgs=ref_imgs)
         node = root
@@ -484,8 +533,6 @@ if __name__ == "__main__":
                 node.output(img_prefix, hide=args.noshow)
             print('')
             # Confirm exit
-            if not node:
-                confirm = input("Are you sure you want to exit? (y/n) [default: y]  ").strip().lower()
-                if confirm not in ['', 'y', 'yes']:
-                    # Cancel exit
-                    node = prev_node
+            if not node and not prompt_yn("Confirm exit?"):
+                # Cancel exit
+                node = prev_node
