@@ -63,11 +63,17 @@ def pil_image_to_png_bytes(img):
 
 
 class PILImageWrapper:
+    """Wrapper around a (de-facto standard) PIL Image.
+
+    Exposes a common wrapper Image interface that can also be implemented for
+    the types.Image which is returned from Nano Banana image generation requests
+    via the google.genai library.
+    """
     def __init__(self, img):
         assert(img is not None)
         self.img = img
 
-    def as_google_genai_types_image(self):
+    def as_google_genai_types_part(self):
         return types.Part(
             inline_data=types.Blob(
                 mime_type='image/png',
@@ -86,16 +92,16 @@ class PILImageWrapper:
 
 
 class GoogleGenAITypesImageWrapper:
-    """Wrapper for google.genai.types.Part representing an image part.
+    """Wrapper for a google.genai.types.Part representing an image part.
 
-    Can be easily converted to a google.genai.types.Image by calling google.genai.types.Part.as_image()
+    The types.Part is easily converted to a types.Image by types.Part.as_image()
     """
     def __init__(self, part):
         self.part = part
         self.img = part.as_image()
         assert(self.img is not None)
 
-    def as_google_genai_types_image(self):
+    def as_google_genai_types_part(self):
         return self.part
 
     def as_pil_image(self):
@@ -109,7 +115,7 @@ class GoogleGenAITypesImageWrapper:
 
 
 class GenNode:
-    """Image generation tree node"""
+    """Node in the image generation conversation tree"""
     def __init__(self, parent, prompt, response=None, ref_imgs=[], virtualroot=False, variations=None):
         self.level = parent.level + 1 if parent else 0
         self.turn = parent.turn + 1 if parent and not virtualroot else 0
@@ -193,7 +199,7 @@ class GenNode:
         # Prompt content
         h.append(types.Content(
             role="user",
-            parts=[types.Part(text=self.prompt)] + [img.as_google_genai_types_image() for img in self.ref_imgs]
+            parts=[types.Part(text=self.prompt)] + [img.as_google_genai_types_part() for img in self.ref_imgs]
         ))
         # Response content
         if self.response is not None:
@@ -313,7 +319,12 @@ class GenNode:
                     print("Error: Generation completed normally, but no image found in content for {self.id()}.")
 
 def prompt_yn(prompt):
-    return input(f"{prompt} (y/n) [default: y]  ").strip().lower() in ['', 'y', 'yes']
+    try:
+        return input(f"{prompt} (y/n) [default: y]  ").strip().lower() in ['', 'y', 'yes']
+    except EOFError:
+        return False
+    except KeyboardInterrupt:
+        return False
 
 # The command interpreter is a bit gross but manageable so not worth
 # refactoring unless/until the set of commands will be growing.
