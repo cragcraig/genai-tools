@@ -11,22 +11,61 @@ from PIL import Image
 
 MODEL_ID = "gemini-3-pro-image-preview"
 
-def image_to_png_bytes(img):
+def pil_image_to_png_bytes(img):
     """Helper to convert PIL Image to bytes for the API."""
     with io.BytesIO() as output:
-        img.save(output, format='PNG')
+        img.save(output, 'PNG')
         return output.getvalue()
 
-def image_part(img):
-    return types.Part(
-        inline_data=types.Blob(
-            mime_type='image/png',
-            data=image_to_png_bytes(img)
+
+class PILImageWrapper:
+    def __init__(self, img):
+        assert(img is not None)
+        self.img = img
+
+    def as_google_genai_types_image(self):
+        return types.Part(
+            inline_data=types.Blob(
+                mime_type='image/png',
+                data=pil_image_to_png_bytes(self.img)
+            )
         )
-    )
+
+    def as_pil_image(self):
+        return self.img
+
+    def save(self, path_or_bytes, format=None):
+        return self.img.save(path_or_bytes, format)
+
+    def show(self):
+        return self.img.show()
+
+
+class GoogleGenAITypesImageWrapper:
+    """Wrapper for google.genai.types.Part representing an image part.
+
+    Can be easily converted to a google.genai.types.Image by calling google.genai.types.Part.as_image()
+    """
+    def __init__(self, part):
+        self.part = part
+        self.img = part.as_image()
+        assert(self.img is not None)
+
+    def as_google_genai_types_image(self):
+        return self.part
+
+    def as_pil_image(self):
+        return Image.open(io.Bytes(self.img.image_bytes))
+
+    def save(self, path):
+        return self.img.save(path)
+
+    def show(self):
+        return self.img.show()
+
 
 class GenNode:
-    """Image generation history node"""
+    """Image generation tree node"""
     def __init__(self, parent, prompt, response=None, ref_imgs=[], virtualroot=False, variations=None):
         self.level = parent.level + 1 if parent else 0
         self.turn = parent.turn + 1 if parent and not virtualroot else 0
@@ -110,7 +149,7 @@ class GenNode:
         # Prompt content
         h.append(types.Content(
             role="user",
-            parts=[types.Part(text=self.prompt)] + [image_part(img) for img in self.ref_imgs]
+            parts=[types.Part(text=self.prompt)] + [img.as_google_genai_types_image() for img in self.ref_imgs]
         ))
         # Response content
         if self.response is not None:
@@ -119,10 +158,10 @@ class GenNode:
 
     def title(self, prompt_length=72):
         if self.parent and self.parent.is_root() and self.prompt == self.parent.prompt:
-            return f"{self.local_id}  [generate - root prompt]"
+            return f"{self.local_id}  [root prompt -> generate]"
         id = 'BASE' if self.parent is None else self.local_id
         root = '[root]' if self.is_root() else ''
-        imgs = f"({len(self.ref_imgs)} img{'s' if len(self.ref_imgs) > 1 else ''})" if self.ref_imgs else ''
+        imgs = f"({len(self.ref_imgs)} ref img{'s' if len(self.ref_imgs) > 1 else ''})" if self.ref_imgs else ''
         prompt = self.prompt[0:min(len(self.prompt), max(12, prompt_length - 4 * self.level))]
         return f"{id}  {root + ' ' if root else ''}{imgs + ' ' if imgs else ''}{prompt + ('...' if len(self.prompt) > len(prompt) else '')}"
 
@@ -183,7 +222,7 @@ class GenNode:
             imgs += self.ref_imgs
         if self.response and self.response.candidates:
             for candidate in self.response.candidates:
-                imgs += [part.as_image() for part in candidate.content.parts]
+                imgs += [GoogleGenAITypesImageWrapper(part) for part in candidate.content.parts if part.as_image()]
         return imgs
 
     def output(self, img_prefix='', hide=False, write=True):
@@ -228,6 +267,7 @@ class GenNode:
                             image.show()
                 if n == 0:
                     print("Error: Generation completed normally, but no image found in content for {self.id()}.")
+
 
 def interactive_session(client, image_config, node):
     try:
@@ -399,25 +439,25 @@ if __name__ == "__main__":
     readline.parse_and_bind("tab: complete")
 
     # Load any reference images now so that we can fail early if they're missing
-    ref_imgs=[ Image.open(path) for path in args.ref ]
+    ref_imgs=[PILImageWrapper(Image.open(path)) for path in args.ref ]
 
-    # Define the image config
+    # Define the Gemini image config
     image_config = types.ImageConfig(
         aspect_ratio=args.aspect_ratio,
         image_size=args.resolution
     )
 
-    # Input base prompt, if necessary
+    # Prompt for base prompt, if necessary
     prompt = args.prompt
     if not args.prompt and not args.ref:
         print('Provide an initial prompt to generate')
-        print('  example: Baby t-rex on a small pacific atoll,following in its mother\'s huge footprints,Studio Ghibli inspired,cinematic lighting\n')
+        print('  example: Baby t-rex on a small pacific atoll. T-rex don\'t have feathers.,following in its mother\'s huge footprints,Studio Ghibli inspired,cinematic lighting\n')
         prompt = input(f"Prompt >> ").strip()
         if not prompt:
             print('Error: Empty prompt, exiting')
             exit(0);
 
-    # Prep output path
+    # Prep output path and ensure directory exists
     path = args.path
     if path is None:
         path = 'out-' + str(uuid.uuid4())[0:4]
@@ -426,7 +466,7 @@ if __name__ == "__main__":
         os.makedirs(path, exist_ok=True if args.path else False)
     img_prefix = os.path.join(path, args.prefix)
 
-    # Gemini
+    # Gemini loop
     with genai.Client() as client:
         root = GenNode.new_root(prompt, ref_imgs=ref_imgs)
         node = root
@@ -442,3 +482,9 @@ if __name__ == "__main__":
             if out and node is not None:
                 node.output(img_prefix, hide=args.noshow)
             print('')
+            # Confirm exit
+            if not node:
+                confirm = input("Are you sure you want to exit? (y/n) [default: y]  ").strip().lower()
+                if confirm not in ['', 'y', 'yes']:
+                    # Cancel exit
+                    node = prev_node
