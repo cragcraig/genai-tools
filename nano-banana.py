@@ -140,7 +140,7 @@ class GenNode:
         return f"{self.parent.id(sep=sep)}{sep}{self.local_id}"
 
     def get_root(self, virtualroots=True):
-        return self if (self.is_root() and virtualroots) or self.parent is None else self.parent.get_root()
+        return self if (self.is_root() and virtualroots) or self.parent is None else self.parent.get_root(virtualroots=virtualroots)
 
     def history(self):
         if self.is_root():
@@ -158,7 +158,7 @@ class GenNode:
 
     def title(self, prompt_length=72):
         if self.parent and self.parent.is_root() and self.prompt == self.parent.prompt:
-            return f"{self.local_id}  [root prompt -> generate]"
+            return f"{self.local_id}  [root -> generate]"
         id = 'BASE' if self.parent is None else self.local_id
         root = '[root]' if self.is_root() else ''
         imgs = f"({len(self.ref_imgs)} ref img{'s' if len(self.ref_imgs) > 1 else ''})" if self.ref_imgs else ''
@@ -299,10 +299,20 @@ def interactive_session(client, image_config, node):
 
             # Switch to the parent node
             elif cmd == "up":
-                if node.parent is None:
-                    print("Error: can't go higher than root")
+                if len(splits) == 2 and splits[1] in ['root', 'top']:
+                    # up to next root or top root
+                    return node.get_root(virtualroots=True if splits[1] == 'root' else False), False
+                lvls = int(splits[1]) if len(splits) == 2 else 1
+                if not lvls or lvls < 1 or len(splits) > 2:
+                    print(f"Error: Unexpected parameter(s), expecting:  up [root | top | NUM_LEVELS]")
                     return node, False
-                return node.parent, False
+                for i in range(0, lvls):
+                    if node.parent is None:
+                        print("Warning: halted early, reached the root of the tree")
+                        return node, False
+                    # up to parent
+                    node = node.parent
+                return node, False
 
             # Switch to a child node
             elif cmd == "down":
@@ -323,19 +333,11 @@ def interactive_session(client, image_config, node):
                 return node.children[idx], False
 
             # Create a new virtual root based on node
-            elif cmd == "virtualroot":
+            elif cmd == "newroot":
                 if node.is_root():
                     print('Error: already a root')
                     return node, False
                 return node.create_virtualroot(node.all_imgs()), False
-
-            # Switch to current root node
-            elif cmd == "root":
-                return node.get_root(), False
-
-            # Switch to base root node
-            elif cmd == "baseroot":
-                return node.get_root(virtualroots=False), False
 
             # Print slice of the tree containing node
             elif cmd == "tree":
@@ -401,8 +403,7 @@ def interactive_session(client, image_config, node):
                 print("Generate canceled (empty prompt)")
 
             # TODO:
-            #           - virtualroot  create a new child node that uses the current node content but acts like none of its ancestors exist
-            #           - generate  support for temperature, topn, topp, etc as parameters
+            #           - generate  support for seed, temperature, topn, topp, etc as parameters
             #           - help  list of commands
         
     except EOFError:
@@ -417,7 +418,7 @@ def interactive_session(client, image_config, node):
 
 # Simple autocomplete function
 def completer(text, state):
-    options = [i for i in ['exit', 'quit', 'sibling', 'retry', 'generate', 'context', 'down', 'up', 'virtualroot', 'root', 'baseroot', 'tree', 'tree up', 'tree down', 'show'] if i.startswith(text)]
+    options = [i for i in ['exit', 'quit', 'sibling', 'retry', 'generate', 'context', 'down', 'up', 'up root', 'up top', 'newroot', 'tree', 'tree up', 'tree down', 'show'] if i.startswith(text)]
     if state < len(options):
         return options[state]
     else:
