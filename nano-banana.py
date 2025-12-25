@@ -355,6 +355,60 @@ def prompt_yn(prompt):
     except KeyboardInterrupt:
         return False
 
+def parse_prompt(template_prompt, outer=True):
+    """Return list of all concrete prompt variants described by the template prompt."""
+    variants = [[]]
+    parts = []
+    builder = []
+    level = 0
+    escape_next = False
+    for c in template_prompt:
+        if escape_next:
+            builder.append(c)
+            escape_next = False
+        elif c == '\\':
+            escape_next = True
+        elif c == '{':
+            level += 1
+            if level > 1:
+                raise ValueError('Prompt variation templates don\'t (yet) support nested {a,b,...} blocks')
+            chunk = ''.join(builder)
+            for v in variants:
+                v.append(chunk)
+            builder = []
+        elif c == '}':
+            level -= 1
+            if level < 0:
+                raise ValueError('Prompt parsing failed: Encountered unescaped and unpaired }. Note that literal { or } characters must be escaped like \\{ or \\}')
+            # first finish the part
+            parts.append(''.join(builder))
+            builder = []
+            # then construct updated set of (partial) variants
+            old_variants = variants
+            variants = []
+            for v in old_variants:
+                for p in parts:
+                    variants.append(v + [p])
+            parts = []
+        elif c == '|':
+            if level == 0 and outer:
+                # don't treat | as a special character outside of {} blocks
+                builder.append(c)
+            else:
+                # | separates variants in a {} block
+                parts.append(''.join(builder))
+                builder = []
+        else:
+            # All non-special characters are simply appended to the current chunk
+            builder.append(c)
+    if level != 0:
+        raise ValueError('Prompt parsing failed: Encountered unescaped and unpaired {. Note that literal { or } characters must be escaped like \\{ or \\}')
+    chunk = ''.join(builder)
+    for v in variants:
+        v.append(chunk)
+    builder = []
+    return [''.join(v) for v in variants]
+
 # The command interpreter is a bit gross (but manageable) so not worth
 # refactoring unless there are plans to add more commands.
 async def interactive_session(client, image_config, node):
@@ -496,11 +550,27 @@ async def interactive_session(client, image_config, node):
                         print("ACK: Not a prompt, ignoring invalid command. Try again.")
                         return node, None
 
-            # Do the generate
+            # Do any image generation
             if prompt:
-                variations_text = f" {variations} variants" if variations > 1 else ''
+                # Parse user-provided prompt template into concrete set of prompts
+                prompts = None
+                try:
+                    prompts = parse_prompt(prompt)
+                except ValueError as e:
+                    print(e)
+                    print('Aborting generate, try again')
+                    return node, None
+                # Print summary of what will be generated
+                if len(prompts) > 1:
+                    print('\nPrompt variants:')
+                    for i, p in enumerate(prompts):
+                        print(f" {i}  {p}")
+                variations_text = f" {variations} variations{' of each prompt variant' if len(prompts) < 1 else ''}" if variations > 1 else ''
                 print(f"Generating{variations_text}...  ", end='', flush=True)
-                new_children = [node.create_child(prompt, ref_imgs=ref_imgs, seed=None if i == 0 else i) for i in range(0, variations)]
+                # Create the new child nodes and generate images
+                new_children = []
+                for p in prompts:
+                    new_children.extend([node.create_child(p, ref_imgs=ref_imgs, seed=None if i == 0 else i) for i in range(0, variations)])
                 tasks = [child.generate(client, image_config) for child in new_children]
                 elapsed = await asyncio.gather(*tasks)
                 print(', '.join([f"{sec:.1f}" for sec in elapsed]) + ' seconds')
@@ -557,7 +627,7 @@ async def main():
     prompt = args.prompt
     if not args.prompt and not args.ref:
         print('Provide a prompt for initial context')
-        print('  example: Baby t-rex on a small pacific atoll. T-rex don\'t have feathers.,following in its mother\'s huge footprints,Studio Ghibli inspired,cinematic lighting\n')
+        print('  example: Baby t-rex with {faint scales,feathers} on a small pacific atoll. {Daytime|Moonless night with a brilliant aurora borealis}.,following in its mother\'s huge footprints,Studio Ghibli inspired,cinematic lighting\n')
         prompt = input(f"Prompt >> ").strip()
         if not prompt:
             print('Error: Empty root context (no initial prompt nor reference images), aborting...')
