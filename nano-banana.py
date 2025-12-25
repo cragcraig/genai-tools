@@ -1,3 +1,4 @@
+import asyncio
 import argparse
 import readline
 import textwrap
@@ -70,7 +71,8 @@ Command Glossary:
         - root
             Create a copy of the current node and mark it as a new conversation
             root (descendents of a root node will ignore any conversation or
-            image context from the chain of ancestors prior to that root node.
+            image context from the chain of ancestors prior to that root's
+            generated image.
 
     General
         - help / ?
@@ -137,7 +139,7 @@ class GoogleGenAITypesImageWrapper:
 
 class GenNode:
     """Node in the image generation conversation tree"""
-    def __init__(self, parent, prompt, response=None, ref_imgs=[], virtualroot=False, variations=None):
+    def __init__(self, parent, prompt, response=None, ref_imgs=[], virtualroot=False, seed=None):
         self.level = parent.level + 1 if parent else 0
         self.turn = parent.turn + 1 if parent and not virtualroot else 0
         self.virtualroot = virtualroot
@@ -147,8 +149,8 @@ class GenNode:
         assert prompt is not None, 'Prompt must not be None'
         self.prompt = prompt
         self.ref_imgs = ref_imgs
+        self.seed = seed
         self.response = response
-        self.variations = variations
         self.elapsed_sec = None
 
     @classmethod
@@ -161,44 +163,45 @@ class GenNode:
 
     def create_virtualroot(self, ref_imgs):
         if self.is_root():
-            raise RuntimeError('Attempted to create a virtual root as a direct child of a root node')
+            raise RuntimeError('Can\'t create a virtual root from a root node')
         if not ref_imgs:
             raise ValueError('Must provide at least 1 reference image to initialize a virtual root')
         child = GenNode(self, '', ref_imgs=ref_imgs, virtualroot=True)
         self.children.append(child)
         return child
 
-    def create_child(self, prompt, ref_imgs=[], variations=None):
+    def create_child(self, prompt, ref_imgs=[], seed=None):
         if self.response is None and not self.is_root():
             raise RuntimeError('Attempted to create child of non-root node that has no response {self.id()}')
-        child = GenNode(self, prompt, ref_imgs=ref_imgs, variations=variations)
+        child = GenNode(self, prompt, ref_imgs=ref_imgs, seed=None)
         self.children.append(child)
         return child
 
-    def generate(self, client, image_config):
+    async def generate(self, client, image_config):
         if self.parent is None:
             print("Error: root node is a meta node for which content is never directly generated")
             return
         start_time = time.perf_counter()
-        content = client.models.generate_content(
+        response = await client.aio.models.generate_content(
             model=MODEL_ID,
             contents=self.history(),
-            config=self._gen_content_config(image_config)
+            config=self._gen_content_config(image_config),
         )
         elapsed_sec = time.perf_counter() - start_time
-        self._set_response(content, elapsed_sec)
+        self._set_response(response, elapsed_sec)
         return elapsed_sec
 
     def _gen_content_config(self, image_config):
         return types.GenerateContentConfig(
             response_modalities=['TEXT', 'IMAGE'],
             image_config=image_config,
-            candidate_count=self.variations
+            seed=self.seed,
         )
 
     def _set_response(self, response, elapsed_sec):
+        # TODO: Check for a failed generate response (and record the failed state)
         if self.response is not None:
-            raise RuntimeError('Attempted to overwrite response for node {self.id()}')
+            raise RuntimeError('Attempted to overwrite preexisting response recorded on node {self.id()}')
         self.response = response
         self.elapsed_sec = elapsed_sec
 
@@ -291,6 +294,11 @@ class GenNode:
         imgs = []
         if self.ref_imgs:
             imgs += self.ref_imgs
+        imgs += self.generated_imgs()
+        return imgs
+
+    def generated_imgs(self):
+        imgs = []
         if self.response and self.response.candidates:
             for candidate in self.response.candidates:
                 imgs += [GoogleGenAITypesImageWrapper(part) for part in candidate.content.parts if part.as_image()]
@@ -347,9 +355,9 @@ def prompt_yn(prompt):
     except KeyboardInterrupt:
         return False
 
-# The command interpreter is a bit gross but manageable so not worth
-# refactoring unless/until the set of commands will be growing.
-def interactive_session(client, image_config, node):
+# The command interpreter is a bit gross (but manageable) so not worth
+# refactoring unless there are plans to add more commands.
+async def interactive_session(client, image_config, node):
     try:
         # Read an individual line from the user
         line = input(f"> ").strip()
@@ -357,11 +365,11 @@ def interactive_session(client, image_config, node):
         # Handle exit conditions
         if line.lower() in ['exit', 'quit']:
             print("Goodbye!")
-            return None, False
+            return None, None
 
         prompt = None
         ref_imgs = []
-        variations = None
+        variations = 1  # default to 1
         if line:
             splits = line.split()
             cmd = splits[0].lower()
@@ -369,41 +377,41 @@ def interactive_session(client, image_config, node):
             # Help message
             if cmd in ["help", "?"]:
                 print(HELP_TEXT);
-                return node, False
+                return node, None
 
             # Show the content at the node
             if cmd == "show":
                 node.output(hide=False, write=False)
-                return node, False
+                return node, None
 
             # Print prompt history for this node
             elif cmd == "context":
                 print('')
                 node.print_summary(full=True)
-                return node, False
+                return node, None
 
             # Switch to the parent node
             elif cmd == "up":
                 if len(splits) == 2 and splits[1] in ['root', 'top']:
                     # up to next root or top root
-                    return node.get_root(virtualroots=True if splits[1] == 'root' else False), False
+                    return node.get_root(virtualroots=True if splits[1] == 'root' else False), None
                 lvls = int(splits[1]) if len(splits) == 2 else 1
                 if not lvls or lvls < 1 or len(splits) > 2:
                     print('Error: Unexpected parameter(s), expecting:  up [{top|root|LEVELS}]')
-                    return node, False
+                    return node, None
                 for i in range(0, lvls):
                     if node.parent is None:
                         print("Warning: halted early, reached the root of the tree")
-                        return node, False
+                        return node, None
                     # up to parent
                     node = node.parent
-                return node, False
+                return node, None
 
             # Switch to a child node
             elif cmd == "down":
                 if len(node.children) == 0:
                     print(f"Error: Can't go down from a leaf node")
-                    return node, False
+                    return node, None
                 idx = 0
                 if len(node.children) == 1:
                     idx = 0
@@ -411,18 +419,18 @@ def interactive_session(client, image_config, node):
                     idx = int(splits[1])
                 else:
                     print(f"Missing argument, expected CHILD_INDEX to specify which of the {len(node.children)} children")
-                    return node, False
+                    return node, None
                 if idx >= len(node.children):
                     print(f"Error: Out of bounds index {idx}, node has {len(node.children)} children")
-                    return node, False
-                return node.children[idx], False
+                    return node, None
+                return node.children[idx], None
 
             # Create a new virtual root based on node
             elif cmd == "root":
                 if node.is_root():
                     print('Error: already a root')
-                    return node, False
-                return node.create_virtualroot(node.all_imgs()), False
+                    return node, None
+                return node.create_virtualroot(node.generated_imgs()), None
 
             # Print slice of the tree containing node
             elif cmd == "tree":
@@ -436,18 +444,24 @@ def interactive_session(client, image_config, node):
                     print('')
                     node.get_root(virtualroots=True if filter == 'root' else False).print_tree(up=False, down=True)
                 elif filter:
-                    print('Error: Unsupported value for filter argument, optional but if set must be one of: {up, down, top, root}')
-                return node, False
+                    print('Error: Unsupported value for FILTER argument, optional but if set must be one of: {up, down, top, root}')
+                return node, None
 
             # Generate a new node
             elif cmd in ["generate", "sibling", "retry"]:
-                if len(splits) == 2:
+                if len(splits) > 2:
+                    print('Error: too many arguments')
+                    return node, None
+                elif len(splits) == 2:
                     variations = int(splits[1])
+                    if not (variations > 0):
+                        print(f"Error: Unsupported value `{variations}` for VARIATIONS argument, optional but if set must be a positive integer")
+                        return node, None
                 # Generate a sibling (new child of the parent)
                 if cmd in ["sibling", "retry"]:
                     if node.is_root():
                         print("Error: can't create siblings for root nodes")
-                        return node, False
+                        return node, None
                     else:
                         if cmd == "retry":
                             prompt = node.prompt
@@ -464,31 +478,33 @@ def interactive_session(client, image_config, node):
                         prompt = input(f"[start] Prompt >> ").strip()
                     else:
                         # Should never happen(tm)
-                        raise ValueError('Invalid state: root node with no prompt and no reference images')
+                        raise ValueError('Invalid state: root node should not exist with no prompt and no reference images')
                 elif not prompt:
                     prompt = input(f"[Turn {node.turn}] Prompt >> ").strip()
             else:
                 # Input is not a recognized command
                 if node.is_root() and node.prompt:
-                    # Invalid command, but it's also not valid to use a generate prompt for this node
-                    print("Warning: Invalid command, ignored. Try again.")
+                    # Invalid command, but it's also not valid to use a generate prompt at this root node
+                    print("Warning: Unrecognized as a command but also can't generate with a new prompt at this node due to existing root prompt. Try just `generate`.")
                 else:
-                    # Invalid command, but maybe it was intended as a generate prompt?
+                    # Invalid command, but probably it was intended as a generate prompt?
                     if node.is_root():
                         ref_imgs = node.ref_imgs
                     if prompt_yn("Unrecognized as a command. Generate as a prompt?"):
                         prompt = line
                     else:
                         print("ACK: Not a prompt, ignoring invalid command. Try again.")
+                        return node, None
 
             # Do the generate
             if prompt:
-                assert(variations is None) # Multiple candidates is not supported by nano banana models
-                child = node.create_child(prompt, ref_imgs=ref_imgs, variations=variations)
-                print("Generating...  ", end='', flush=True)
-                elapsed_sec = child.generate(client, image_config)
-                print(f"{elapsed_sec:.1f} seconds")
-                return child, True
+                variations_text = f" {variations} variants" if variations > 1 else ''
+                print(f"Generating{variations_text}...  ", end='', flush=True)
+                new_children = [node.create_child(prompt, ref_imgs=ref_imgs, seed=None if i == 0 else i) for i in range(0, variations)]
+                tasks = [child.generate(client, image_config) for child in new_children]
+                elapsed = await asyncio.gather(*tasks)
+                print(', '.join([f"{sec:.1f}" for sec in elapsed]) + ' seconds')
+                return node, new_children
             elif prompt == '':
                 print("Generate canceled (empty prompt)")
 
@@ -498,12 +514,12 @@ def interactive_session(client, image_config, node):
     except EOFError:
         # Handles Ctrl+D
         print("\nExiting...")
-        return None, False
+        return None, None
     except KeyboardInterrupt:
         # Handles Ctrl+C
         print("\nInterrupted by user.")
-        return None, False
-    return node, False
+        return None, None
+    return node, None
 
 # Simple autocomplete function
 def completer(text, state):
@@ -513,7 +529,7 @@ def completer(text, state):
     else:
         return None
 
-if __name__ == "__main__":
+async def main():
     parser = argparse.ArgumentParser(prog='nano-banana')
     parser.add_argument('--path', default=None, help='Directory to write output files, if not set a unique subdirectory will be made')
     parser.add_argument('--prefix', default='img', help='Prefix for output image filenames')
@@ -568,11 +584,16 @@ if __name__ == "__main__":
                 node.print_summary(full=False)
                 prev_node = node
                 print('')
-            node, out = interactive_session(client, image_config, node)
-            if out and node is not None:
-                node.output(img_prefix, hide=args.noshow)
+            node, out = await interactive_session(client, image_config, node)
+            if out:
+                # Output all newly generated nodes
+                for n in out:
+                    n.output(img_prefix, hide=args.noshow)
             print('')
             # Confirm exit
             if not node and not prompt_yn("Confirm exit?"):
                 # Cancel exit
                 node = prev_node
+
+if __name__ == "__main__":
+    asyncio.run(main());
