@@ -14,55 +14,58 @@ MODEL_ID = "gemini-3-pro-image-preview"
 HELP_TEXT = """
 tl;dr:
 
-    An interactive REPL loop for iterative image generation with Nano Banana
+    An interactive REPL loop for iterative image generation with Nano Banana.
 
 How It Works:
 
     Construct a directed tree of sequential Prompt -> Generated Image turns as
-    you iteratively explore and refineme the generated images.
+    you iteratively explore and refine branching chains of generated images.
 
     The resulting tree is essentially an undo/redo history supporting arbitrary
     resumption from any decision point in the conversation. Each branch in the
-    tree is an alternate timelines of the conversation.
+    tree represents an alternate timeline of the conversation.
 
-    Generating a new image creates a new child node in the tree. The context
-    used for generating this image will be the coversation history and image
-    context since the last root node, following the conversation path up the
-    chain of nodes leading to the new child node.
+    Generating a new image is represented as a new child node in the tree. The
+    context used for generating this image will be the coversation history and
+    images since the most recent root node, constructed by following the
+    conversation path along the chain of nodes leading from that last root node
+    to this new child node.
 
-    Commands enable arbitrarily traversing the conversation tree and branching
-    new child nodes (aka image generation) from any point in the coversation.
+    Commands support arbitrarily traversing the conversation tree and branching
+    off new child nodes (aka kicking off new image generation) from any point in
+    the conversation.
 
 Command Glossary:
 
     Tree Traversal
-        - tree [up|down]
-            Display overview of the tree showing the active node
+        - tree [up|down|top|root]
+            Display the slice of the tree containing the active node. To view
+            the full tree, run this command at the top root node.
 
         - up [top|root|LEVELS]
-            Move to the parent node
+            Move to the parent node.
 
         - down [CHILD_INDEX]
-            Move to a child node
+            Move to a child node.
 
     Current Node
         - show
-            Display any generated content at the active node
+            Display any generated content at the active node.
 
         - context
-            Display the conversation context at the active node
+            Display the conversation context at the active node.
 
     Generate Images
         - generate [VARIATIONS]
           (or simply enter text that doesn't match to any command)
-            Generate a child of the active node
+            Generate a child of the active node.
 
         - sibling [VARIATIONS]
-            Generate a new sibling (shared parent) of the active node
+            Generate a new sibling (shared parent) of the active node.
 
         - retry [VARIATIONS]
             Generate a new sibling (shared parent) using the exact same context
-            used to generate the active node
+            used to generate the active node.
 
         - root
             Create a copy of the current node and mark it as a new conversation
@@ -424,10 +427,16 @@ def interactive_session(client, image_config, node):
             # Print slice of the tree containing node
             elif cmd == "tree":
                 filter = None if len(splits) < 2 else splits[1].lower()
-                if filter and filter not in ['up', 'down']:
-                    print('Warning: filter argument ignored, optional but if set must be one of: {up, down}')
-                print('')
-                node.print_tree(up=False if filter == 'down' else True, down=False if filter == 'up' else True)
+                if len(splits) > 2:
+                    print('Error: too many arguments')
+                elif not filter or filter in ['up', 'down']:
+                    print('')
+                    node.print_tree(up=False if filter == 'down' else True, down=False if filter == 'up' else True)
+                elif filter in ['root', 'top']:
+                    print('')
+                    node.get_root(virtualroots=True if filter == 'root' else False).print_tree(up=False, down=True)
+                elif filter:
+                    print('Error: Unsupported value for filter argument, optional but if set must be one of: {up, down, top, root}')
                 return node, False
 
             # Generate a new node
