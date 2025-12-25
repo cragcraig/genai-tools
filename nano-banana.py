@@ -507,7 +507,7 @@ def interactive_session(client, image_config, node):
 
 # Simple autocomplete function
 def completer(text, state):
-    options = [i for i in ['help', '?', 'exit', 'quit', 'sibling', 'retry', 'generate', 'context', 'down', 'up', 'up root', 'up top', 'root', 'tree', 'tree up', 'tree down', 'show'] if i.startswith(text)]
+    options = [i for i in ['help', '?', 'exit', 'quit', 'sibling', 'retry', 'generate', 'context', 'down', 'up', 'up root', 'up top', 'root', 'tree', 'tree up', 'tree down', 'tree root', 'tree top', 'show'] if i.startswith(text)]
     if state < len(options):
         return options[state]
     else:
