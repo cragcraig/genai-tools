@@ -36,20 +36,38 @@ How It Works:
 Command Glossary:
 
     Tree Traversal
-        - up [top|root|LEVELS]
-        - down [CHILD_INDEX]
-
-    Print State
-        - show
-        - context
         - tree [up|down]
+            Display overview of the tree showing the active node
+
+        - up [top|root|LEVELS]
+            Move to the parent node
+
+        - down [CHILD_INDEX]
+            Move to a child node
+
+    Current Node
+        - show
+            Display any generated content at the active node
+
+        - context
+            Display the conversation context at the active node
 
     Generate Images
         - generate [VARIATIONS]
-            (or simply enter a prompt that doesn't match any command)
+          (or simply enter text that doesn't match to any command)
+            Generate a child of the active node
+
         - sibling [VARIATIONS]
+            Generate a new sibling (shared parent) of the active node
+
         - retry [VARIATIONS]
+            Generate a new sibling (shared parent) using the exact same context
+            used to generate the active node
+
         - root
+            Create a copy of the current node and mark it as a new conversation
+            root (descendents of a root node will ignore any conversation or
+            image context from the chain of ancestors prior to that root node.
 
     General
         - help / ?
