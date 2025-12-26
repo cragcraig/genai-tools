@@ -356,7 +356,9 @@ def prompt_yn(prompt):
         return False
 
 def parse_prompt(template_prompt, outer=True):
-    """Return list of all concrete prompt variants described by the template prompt."""
+    """Return list of all concrete prompt variants described by the template prompt,
+
+    i.e., expand all {varA|varB|varC} blocks."""
     variants = [[]]
     parts = []
     builder = []
@@ -371,7 +373,7 @@ def parse_prompt(template_prompt, outer=True):
         elif c == '{':
             level += 1
             if level > 1:
-                raise ValueError('Prompt variation templates don\'t (yet) support nested {a,b,...} blocks')
+                raise ValueError('Prompt variant templates don\'t (yet) support nested variant blocks')
             chunk = ''.join(builder)
             for v in variants:
                 v.append(chunk)
@@ -411,11 +413,11 @@ def parse_prompt(template_prompt, outer=True):
 
 # The command interpreter is a bit gross (but manageable) so not worth
 # refactoring unless there are plans to add more commands.
-async def interactive_session(client, image_config, node):
+async def interactive_session(client, image_config, node, confirm_at=None):
     try:
         # Read an individual line from the user
         line = input(f"> ").strip()
-        
+
         # Handle exit conditions
         if line.lower() in ['exit', 'quit']:
             print("Goodbye!")
@@ -539,7 +541,7 @@ async def interactive_session(client, image_config, node):
                 # Input is not a recognized command
                 if node.is_root() and node.prompt:
                     # Invalid command, but it's also not valid to use a generate prompt at this root node
-                    print("Warning: Unrecognized as a command but also can't generate with a new prompt at this node due to existing root prompt. Try just `generate`.")
+                    print("Warning: Unrecognized as a command but also can't use as a prompt due to being at a root node with a prompt already. Try just `generate`.")
                 else:
                     # Invalid command, but probably it was intended as a generate prompt?
                     if node.is_root():
@@ -550,9 +552,9 @@ async def interactive_session(client, image_config, node):
                         print("ACK: Not a prompt, ignoring invalid command. Try again.")
                         return node, None
 
-            # Do any image generation
+            # Generate images
             if prompt:
-                # Parse user-provided prompt template into concrete set of prompts
+                # Parse user-provided prompt template and expand into a concrete set of prompts
                 prompts = None
                 try:
                     prompts = parse_prompt(prompt)
@@ -566,8 +568,13 @@ async def interactive_session(client, image_config, node):
                     for i, p in enumerate(prompts):
                         print(f" {i}  {p}")
                 variations_text = f" {variations} variations{' of each prompt variant' if len(prompts) < 1 else ''}" if variations > 1 else ''
-                print(f"Generating{variations_text}...  ", end='', flush=True)
+                # Optionally require user approval to proceed
+                gen_count = len(prompts) * variations
+                if confirm_at is not None and gen_count >= confirm_at and not prompt_yn(f"Confirm approval for generating {gen_count} images?"):
+                    print('Aborted before generating images')
+                    return node, None
                 # Create the new child nodes and generate images
+                print(f"Generating{variations_text}...  ", end='', flush=True)
                 new_children = []
                 for p in prompts:
                     new_children.extend([node.create_child(p, ref_imgs=ref_imgs, seed=None if i == 0 else i) for i in range(0, variations)])
@@ -578,9 +585,6 @@ async def interactive_session(client, image_config, node):
             elif prompt == '':
                 print("Generate canceled (empty prompt)")
 
-            # TODO:
-            #           - generate  support for seed, temperature, topn, topp, etc as parameters
-            #           - help  list of commands
     except EOFError:
         # Handles Ctrl+D
         print("\nExiting...")
@@ -608,6 +612,7 @@ async def main():
     parser.add_argument('--ref', nargs='*', default=[], help='(optional) Reference images to include in initial context')
     parser.add_argument('--noshow', action='store_true', help='Skip displaying image results after each generation completes')
     parser.add_argument('--prompt', default='', help='Initial generate prompt, optional if reference image(s) are provided')
+    parser.add_argument('--confirm-at', default=None, help='Require explicit confirmation before generating more than N images simultaneously');
     args = parser.parse_args()
 
     # Register the completer function and set the 'Tab' key for completion
@@ -627,10 +632,10 @@ async def main():
     prompt = args.prompt
     if not args.prompt and not args.ref:
         print('Provide a prompt for initial context')
-        print('  example: Baby t-rex with {faint scales,feathers} on a small pacific atoll. {Daytime|Moonless night with a brilliant aurora borealis}.,following in its mother\'s huge footprints,Studio Ghibli inspired,cinematic lighting\n')
+        print('  example: Baby t-rex with {faint scales|feathers} on a small pacific atoll. {Daytime|Moonless night with a brilliant aurora borealis}.,following in its mother\'s huge footprints,Studio Ghibli inspired,cinematic lighting\n')
         prompt = input(f"Prompt >> ").strip()
         if not prompt:
-            print('Error: Empty root context (no initial prompt nor reference images), aborting...')
+            print('Error: Empty root context (no initial prompt nor any reference images), aborting...')
             exit(1);
 
     # Prep output path and ensure directory exists
@@ -654,7 +659,7 @@ async def main():
                 node.print_summary(full=False)
                 prev_node = node
                 print('')
-            node, out = await interactive_session(client, image_config, node)
+            node, out = await interactive_session(client, image_config, node, confirm_at=args.confirm_at)
             if out:
                 # Output all newly generated nodes
                 for n in out:
