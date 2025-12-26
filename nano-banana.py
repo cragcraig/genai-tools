@@ -581,7 +581,7 @@ async def interactive_session(client, image_config, node, confirm_at=None):
                 tasks = [child.generate(client, image_config) for child in new_children]
                 elapsed = await asyncio.gather(*tasks)
                 print(', '.join([f"{sec:.1f}" for sec in elapsed]) + ' seconds')
-                return node, new_children
+                return new_children[0] if len(new_children) == 1 else node, new_children
             elif prompt == '':
                 print("Generate canceled (empty prompt)")
 
@@ -592,7 +592,7 @@ async def interactive_session(client, image_config, node, confirm_at=None):
     except KeyboardInterrupt:
         # Handles Ctrl+C
         print("\nInterrupted by user.")
-        return None, None
+        exit(0)
     return node, None
 
 # Simple autocomplete function
