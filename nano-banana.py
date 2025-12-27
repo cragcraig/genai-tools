@@ -592,7 +592,7 @@ async def interactive_session(client, image_config, node, confirm_at=None):
     except KeyboardInterrupt:
         # Handles Ctrl+C
         print("\nInterrupted by user.")
-        exit(0)
+        return
     return node, None
 
 # Simple autocomplete function
@@ -605,14 +605,14 @@ def completer(text, state):
 
 async def main():
     parser = argparse.ArgumentParser(prog='nano-banana')
-    parser.add_argument('--path', default=None, help='Directory to write output files, if not set a unique subdirectory will be made')
-    parser.add_argument('--prefix', default='img', help='Prefix for output image filenames')
+    parser.add_argument('--path', default=None, help='Directory for all output files; default creates a unique subdirectory')
+    parser.add_argument('--prefix', default='img', help='Filename prefix for all output images')
     parser.add_argument('--resolution', choices=["1K", "2K", "4K"], default="1K", help='Defaults to 1K')
     parser.add_argument('--aspect_ratio', choices=[None, "1:1","2:3","3:2","3:4","4:3","4:5","5:4","9:16","16:9","21:9"], default=None)
-    parser.add_argument('--ref', nargs='*', default=[], help='(optional) Reference images to include in initial context')
-    parser.add_argument('--noshow', action='store_true', help='Skip displaying image results after each generation completes')
-    parser.add_argument('--prompt', default='', help='Initial generate prompt, optional if reference image(s) are provided')
-    parser.add_argument('--confirm-at', default=None, help='Require explicit confirmation before generating more than N images simultaneously');
+    parser.add_argument('--img', nargs='*', default=[], help='(optional) Reference images to include in initial context')
+    parser.add_argument('--noshow', action='store_true', help='Skip showing generate image results')
+    parser.add_argument('--prompt', default='', help='Initial conversation context; optional if reference image(s) are provided with --img')
+    parser.add_argument('--confirm-at', default=None, help='Threshold of simulatenous generate image calls that will ask for confirmation; default is no limit')
     args = parser.parse_args()
 
     # Register the completer function and set the 'Tab' key for completion
@@ -620,7 +620,7 @@ async def main():
     readline.parse_and_bind("tab: complete")
 
     # Load any reference images now so that we can fail early if they're missing
-    ref_imgs=[PILImageWrapper(Image.open(path)) for path in args.ref ]
+    ref_imgs=[PILImageWrapper(Image.open(path)) for path in args.img ]
 
     # Define the Gemini image config
     image_config = types.ImageConfig(
@@ -630,13 +630,22 @@ async def main():
 
     # Prompt for base prompt, if necessary
     prompt = args.prompt
-    if not args.prompt and not args.ref:
+    if not args.prompt and not args.img:
         print('Provide a prompt for initial context')
-        print('  example: Baby t-rex with {faint scales|feathers} on a small pacific atoll. {Daytime|Moonless night with a brilliant aurora borealis}.,following in its mother\'s huge footprints,Studio Ghibli inspired,cinematic lighting\n')
-        prompt = input(f"Prompt >> ").strip()
-        if not prompt:
-            print('Error: Empty root context (no initial prompt nor any reference images), aborting...')
-            exit(1);
+        print('  example: Baby t-rex with {faint scales|feathers} on a small pacific atoll. {Daytime|Moonless night with a brilliant aurora borealis}.,following its mother\'s huge indented footprints,Studio Ghibli inspired,cinematic lighting\n')
+        try:
+            prompt = input(f"Prompt >> ").strip()
+            if not prompt:
+                print('Error: Empty context (no initial prompt nor any reference images), aborting...')
+                return
+        except EOFError:
+            # Handles Ctrl+D
+            print("\nExiting...")
+            return
+        except KeyboardInterrupt:
+            # Handles Ctrl+C
+            print("\nInterrupted by user.")
+            return
 
     # Prep output path and ensure directory exists
     path = args.path
