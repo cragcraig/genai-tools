@@ -10,6 +10,10 @@ from google import genai
 from google.genai import types
 from PIL import Image
 
+# TODO:
+#   - Record error nodes (and allow retries?)
+#   - Support supplying reference images as arguments to generate-family commands
+
 MODEL_ID = "gemini-3-pro-image-preview"
 
 HELP_TEXT = """
