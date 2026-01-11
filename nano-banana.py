@@ -44,21 +44,23 @@ Command Glossary:
 
     Tree Traversal
         - tree [up|down|top|root]
-            Display the slice of the tree containing the active node. To view
-            the full tree, run this command at the top root node.
+            Display the slice of the tree containing the active node.
+
+            Hint: To view the full tree, move to the top root node via 'up top'
+                  before running the 'tree' command.
 
         - up [top|root|LEVELS]
-            Move to the parent node.
+            Move to the parent (default) or other ancestor node.
 
         - down [CHILD_INDEX]
             Move to a child node.
 
     Current Node
         - show
-            Display any generated content at the active node.
+            Display any content generated at the active node.
 
         - context
-            Display the conversation context at the active node.
+            Display the full context used to generate content at the active node.
 
     Generate Images
         - generate [VARIATIONS]
@@ -74,9 +76,8 @@ Command Glossary:
 
         - root
             Create a copy of the current node and mark it as a new conversation
-            root (descendents of a root node will ignore any conversation or
-            image context from the chain of ancestors prior to that root's
-            generated image.
+            root. Descendents of this new root node will seed their context
+            starting from the generated image at this node.
 
     General
         - help / ?
