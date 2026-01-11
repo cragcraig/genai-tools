@@ -576,7 +576,7 @@ async def interactive_session(client, image_config, node, confirm_at=None):
                     elif ref_imgs:
                         print(
                             f"INFO: Starting a new top-level generate using the provided image{'s' if len(ref_imgs) > 1 else ''}")
-                        prompt = input(f"[start] Prompt >> ").strip()
+                        prompt = input(f"[Turn 0] Prompt >> ").strip()
                     else:
                         # Should never happen(tm)
                         raise ValueError(
@@ -674,7 +674,7 @@ async def main():
     parser.add_argument('--prompt', default='',
                         help='Initial conversation context; optional if reference image(s) are provided with --img')
     parser.add_argument('--confirm-at', default=None,
-                        help='Threshold of simulatenous generate image calls that will ask for confirmation; default is no limit')
+                        help='Threshold of simulatenous generate image calls that will ask for confirmation; default disables any limit')
     args = parser.parse_args()
 
     # Register the completer function and set the 'Tab' key for completion
