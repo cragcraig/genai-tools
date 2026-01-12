@@ -10,6 +10,8 @@ from google import genai
 from google.genai import types
 from PIL import Image
 
+import kittygraphics
+
 # TODO:
 #   - Record error nodes (and allow retries?)
 #   - Support supplying reference images as arguments to generate-family commands
@@ -138,7 +140,7 @@ class GoogleGenAITypesImageWrapper:
         return self.part
 
     def as_pil_image(self):
-        return Image.open(io.Bytes(self.img.image_bytes))
+        return Image.open(io.BytesIO(self.img.image_bytes))
 
     def save(self, path):
         return self.img.save(path)
@@ -329,7 +331,7 @@ class GenNode:
                          for part in candidate.content.parts if part.as_image()]
         return imgs
 
-    def output(self, img_prefix='', hide=False, write=True):
+    def output(self, img_prefix='', hide=False, write=True, inline=False):
         if not self.response:
             print('Error: No generate response exists')
             return False
@@ -370,6 +372,11 @@ class GenNode:
                         n += 1
                         if not hide:
                             image.show()
+                        if inline:
+                            pil_img = GoogleGenAITypesImageWrapper(part).as_pil_image()
+                            w = min(600, pil_img.width)
+                            pil_resized = pil_img.resize((w, int(pil_img.height / pil_img.width * w)))
+                            kittygraphics.display_pil_image(pil_resized)
                 if n == 0:
                     print(
                         'Error: Generation completed normally, but no image found in content for {self.id()}.')
@@ -643,12 +650,10 @@ async def interactive_session(client, image_config, node, confirm_at=None):
     except KeyboardInterrupt:
         # Handles Ctrl+C
         print('\nInterrupted by user.')
-        return
+        return None, None
     return node, None
 
 # Simple autocomplete function
-
-
 def completer(text, state):
     options = [i for i in ['help', '?', 'exit', 'quit', 'sibling', 'retry', 'generate', 'context', 'down', 'up',
                            'up root', 'up top', 'root', 'tree', 'tree up', 'tree down', 'tree root', 'tree top', 'show'] if i.startswith(text)]
@@ -672,6 +677,8 @@ async def main():
                         help='(optional) Reference images to include in initial context')
     parser.add_argument('--noshow', action='store_true',
                         help='Skip showing generate image results')
+    parser.add_argument('--inline', action='store_true',
+                        help='Show image thumbnails inline in terminal using the Kitty graphics protocol')
     parser.add_argument('--prompt', default='',
                         help='Initial conversation context; optional if reference image(s) are provided with --img')
     parser.add_argument('--confirm-at', default=None,
@@ -682,7 +689,7 @@ async def main():
     readline.set_completer(completer)
     readline.parse_and_bind('tab: complete')
 
-    # Load any reference images now so that we can fail early if they're missing
+    # Load any reference images now so that we fail early if they're missing
     ref_imgs = [PILImageWrapper(Image.open(path)) for path in args.img]
 
     # Define the Gemini image config
@@ -690,6 +697,11 @@ async def main():
         aspect_ratio=args.aspect_ratio,
         image_size=args.resolution
     )
+
+    # Check for Kitty graphics protocol support
+    kitty_graphics_enabled = args.inline and kittygraphics.supports_kitty_graphics()
+    if args.inline and not kitty_graphics_enabled:
+        print('WARNING: Requested inline graphics, but Kitty graphics protocol is not supported by terminal')
 
     # Prompt for base prompt, if necessary
     prompt = args.prompt
@@ -736,7 +748,7 @@ async def main():
             if out:
                 # Output all newly generated nodes
                 for n in out:
-                    n.output(img_prefix, hide=args.noshow)
+                    n.output(img_prefix, hide=args.noshow, inline=kitty_graphics_enabled)
             print('')
             # Confirm exit
             if not node and not prompt_yn('Confirm exit?'):
