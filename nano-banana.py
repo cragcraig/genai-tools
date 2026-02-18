@@ -92,12 +92,51 @@ def prompt_yn(prompt):
     except KeyboardInterrupt:
         return False
 
+class ConsumableString:
+    def __init__(self, s):
+        self.idx = 0
+        self.s = s
+
+    def next(self):
+        if self.idx >= len(self.s):
+            return None
+        c = self.s[self.idx]
+        self.idx += 1
+        return c
+
+    def peek(self):
+        if self.idx >= len(self.s):
+            return None
+        return self.s[self.idx]
+
+def parse_ref(s : ConsumableString):
+    builder = []
+    escape_next = False
+    while (c := s.next()) is not None:
+        if escape_next:
+            builder.append(c)
+            escape_next = False
+        elif p == '\\':
+            escape_next = True
+            c.next()
+        elif p.isspace():
+            break;
+        else:
+            builder.append(c)
+    result = ''.join(builder)
+    # Handle image
+    ext = os.path.splitext(result)
+    if ext in ['.png', '.jpg', '.webp']
+        raise RuntimeError('Images not supported yet')
+    # Handle text
+    with open(result, 'r') as file:
+        return parse_prompt(file.read())
 
 def parse_prompt(template_prompt, outer=True):
     """Return list of all concrete prompt variants described by the template
     prompt,
 
-    i.e., expand all {varA|varB|varC} blocks.
+    i.e., expand all {A|B|C} blocks.
 
     """
     variants = [[]]
@@ -105,7 +144,8 @@ def parse_prompt(template_prompt, outer=True):
     builder = []
     level = 0
     escape_next = False
-    for c in template_prompt:
+    tp = ConsumableString(template_prompt)
+    while (c := tp.next()) is not None:
         if escape_next:
             builder.append(c)
             escape_next = False
@@ -124,7 +164,7 @@ def parse_prompt(template_prompt, outer=True):
             level -= 1
             if level < 0:
                 raise ValueError(
-                    'Prompt parsing failed: Encountered unescaped and unpaired }. Note that literal { or } characters must be escaped like \\{ or \\}')
+                    'Prompt parsing failed: Encountered unpaired }. Note that literal { or } characters must be escaped like \\{ or \\}')
             # first finish the part
             parts.append(''.join(builder))
             builder = []
@@ -143,12 +183,16 @@ def parse_prompt(template_prompt, outer=True):
                 # | separates variants in a {} block
                 parts.append(''.join(builder))
                 builder = []
+        elif c == '@':
+            content = parse_ref(tp)
+            # TODO: Handle image context
+            builder.append(content)
         else:
             # All non-special characters are simply appended to the current chunk
             builder.append(c)
     if level != 0:
         raise ValueError(
-            'Prompt parsing failed: Encountered unescaped and unpaired {. Note that literal { or } characters must be escaped like \\{ or \\}')
+            'Prompt parsing failed: Encountered unpaired {. Note that literal { or } characters must be escaped like \\{ or \\}')
     chunk = ''.join(builder)
     for v in variants:
         v.append(chunk)
