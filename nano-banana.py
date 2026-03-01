@@ -92,9 +92,9 @@ def prompt_yn(prompt):
         return False
 
 
-async def interactive_session(client, image_config, node, confirm_at=None):
+async def interactive_session(client, image_config, model_id, node, confirm_at=None):
     """Process a single interactive command and return the new state."""
-    ctx = commands.CommandContext(client=client, image_config=image_config, confirm_at=confirm_at)
+    ctx = commands.CommandContext(client=client, image_config=image_config, model_id=model_id, confirm_at=confirm_at)
 
     try:
         line = input("> ").strip()
@@ -137,6 +137,9 @@ async def main():
                         help='Filename prefix for all output images')
     parser.add_argument(
         '--resolution', choices=['1K', '2K', '4K'], default='1K', help='Defaults to 1K')
+    parser.add_argument(
+        '--model', choices=['flash', 'pro'], default='flash',
+        help='Model to use: flash (gemini-3.1-flash-image-preview) or pro (gemini-3-pro-image-preview); default: flash')
     parser.add_argument('--aspect_ratio', choices=[None, '1:1', '2:3', '3:2',
                         '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'], default=None)
     parser.add_argument('--show', action='store_true',
@@ -152,6 +155,12 @@ async def main():
     # Register the completer function and set the 'Tab' key for completion
     readline.set_completer(completer)
     readline.parse_and_bind('tab: complete')
+
+    # Resolve model flag to full model ID
+    model_id = {
+        'flash': 'gemini-3.1-flash-image-preview',
+        'pro':   'gemini-3-pro-image-preview',
+    }[args.model]
 
     # Initialize the commands module with dependencies
     commands.init(HELP_TEXT, prompt_yn)
@@ -213,13 +222,14 @@ async def main():
         node = root
         prev_node = None
         # Start the interactive command loop
-        print("\n--- Interactive Nano Banana Shell (type 'exit' or Ctrl+D to quit) ---\n")
+        print(f"\n--- Interactive Nano Banana Shell (Crl+D to quit) ---")
+        print(f"    Model: {model_id}\n")
         while node is not None:
             if node != prev_node:
                 node.print_summary(full=False)
                 prev_node = node
                 print('')
-            node, out = await interactive_session(client, image_config, node, confirm_at=args.confirm_at)
+            node, out = await interactive_session(client, image_config, model_id, node, confirm_at=args.confirm_at)
             if out:
                 # Output all newly generated nodes
                 for n in out:

@@ -17,6 +17,7 @@ class CommandContext:
     """Context passed to all command handlers."""
     client: Any
     image_config: Any
+    model_id: str = ''
     confirm_at: Optional[int] = None
 
 
@@ -243,7 +244,7 @@ async def _run_generation(parts_list: list, variations: int,
             for i in range(variations)
         ])
 
-    tasks = [child.generate(ctx.client, ctx.image_config) for child in new_children]
+    tasks = [child.generate(ctx.client, ctx.image_config, ctx.model_id) for child in new_children]
     elapsed = await asyncio.gather(*tasks)
     print(', '.join([f"{sec:.1f}" for sec in elapsed]) + ' seconds')
 

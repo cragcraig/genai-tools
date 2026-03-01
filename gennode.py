@@ -7,8 +7,6 @@ from google.genai import types
 import kittygraphics
 from imagewrappers import GoogleGenAITypesImageWrapper
 
-MODEL_ID = 'gemini-3-pro-image-preview'
-
 
 def _part_to_genai(part) -> types.Part:
     """Convert a single parts-list entry to a google.genai types.Part."""
@@ -75,14 +73,14 @@ class GenNode:
     # Generation
     # ------------------------------------------------------------------
 
-    async def generate(self, client, image_config):
+    async def generate(self, client, image_config, model_id):
         if self.parent is None:
             print(
                 'Error: root node is a meta node for which content is never directly generated')
             return
         start_time = time.perf_counter()
         response = await client.aio.models.generate_content(
-            model=MODEL_ID,
+            model=model_id,
             contents=self.history(),
             config=self._gen_content_config(image_config),
         )
