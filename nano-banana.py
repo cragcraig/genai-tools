@@ -5,12 +5,10 @@ import os
 import uuid
 from google import genai
 from google.genai import types
-from PIL import Image
 
 import kittygraphics
 import commands
 import prompt_ast
-from imagewrappers import PILImageWrapper
 from gennode import GenNode
 
 # TODO:
@@ -141,14 +139,12 @@ async def main():
         '--resolution', choices=['1K', '2K', '4K'], default='1K', help='Defaults to 1K')
     parser.add_argument('--aspect_ratio', choices=[None, '1:1', '2:3', '3:2',
                         '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'], default=None)
-    parser.add_argument('--img', nargs='*', default=[],
-                        help='(optional) Reference images to include in initial context')
     parser.add_argument('--show', action='store_true',
                         help='Show generate image results')
     parser.add_argument('--noinline', action='store_true',
                         help='Don\'t show image thumbnails inline in terminal using the Kitty graphics protocol')
     parser.add_argument('--prompt', default='',
-                        help='Initial conversation context; optional if reference image(s) are provided with --img')
+                        help='Initial prompt; use @path/to/image.png to inline images, e.g. "paint @ref.png in {watercolor|oil} style"')
     parser.add_argument('--confirm-at', default=None,
                         help='Threshold of simulatenous generate image calls that will ask for confirmation; default disables any limit')
     args = parser.parse_args()
@@ -159,9 +155,6 @@ async def main():
 
     # Initialize the commands module with dependencies
     commands.init(HELP_TEXT, prompt_yn)
-
-    # Load any reference images now so that we fail early if they're missing
-    ref_imgs = [PILImageWrapper(Image.open(path)) for path in args.img]
 
     # Define the Gemini image config
     image_config = types.ImageConfig(
@@ -176,14 +169,14 @@ async def main():
 
     # Prompt for base prompt, if necessary
     prompt = args.prompt
-    if not args.prompt and not args.img:
+    if not prompt:
         print('Provide a prompt for initial context')
-        print('  example: Baby t-rex with {faint scales|feathers} on a small pacific atoll. {Daytime|Moonless night with a brilliant aurora borealis}.,following its mother\'s huge indented footprints,Studio Ghibli inspired,cinematic lighting\n')
+        print('  example: Baby t-rex with {faint scales|feathers} on a small pacific atoll. {Daytime|Moonless night with a brilliant aurora borealis}.,following its mother\'s huge indented footprints,Studio Ghibli inspired,cinematic lighting')
+        print('  tip: use @path/to/image.png anywhere in the prompt to inline a reference image\n')
         try:
             prompt = input(f"Prompt >> ").strip()
             if not prompt:
-                print(
-                    'Error: Empty context (no initial prompt nor any reference images), aborting...')
+                print('Error: Empty initial prompt, aborting...')
                 return
         except EOFError:
             # Handles Ctrl+D
@@ -193,6 +186,17 @@ async def main():
             # Handles Ctrl+C
             print('\nInterrupted by user.')
             return
+
+    # Validate the prompt now so we fail fast on syntax errors or missing image files
+    try:
+        for variant in prompt_ast.expand(prompt_ast.parse(prompt)):
+            for node in variant:
+                if isinstance(node, prompt_ast.ImageNode) and not os.path.isfile(node.path):
+                    print(f"Error: image file not found: {node.path}")
+                    return
+    except (ValueError, OSError) as e:
+        print(f"Error in initial prompt: {e}")
+        return
 
     # Prep output path and ensure directory exists
     path = args.path
@@ -205,7 +209,7 @@ async def main():
 
     # Gemini
     with genai.Client() as client:
-        root = GenNode.new_root(prompt, ref_imgs=ref_imgs)
+        root = GenNode.new_root([prompt])
         node = root
         prev_node = None
         # Start the interactive command loop

@@ -10,32 +10,48 @@ from imagewrappers import GoogleGenAITypesImageWrapper
 MODEL_ID = 'gemini-3-pro-image-preview'
 
 
-class GenNode:
-    """Node in the image generation conversation tree."""
+def _part_to_genai(part) -> types.Part:
+    """Convert a single parts-list entry to a google.genai types.Part."""
+    if isinstance(part, str):
+        return types.Part(text=part)
+    return part.as_google_genai_types_part()
 
-    def __init__(self, parent, prompt, response=None, ref_imgs=[], virtualroot=False, seed=None):
+
+class GenNode:
+    """Node in the image generation conversation tree.
+
+    Each node stores its prompt context as an ordered ``parts`` list of
+    alternating text strings and image wrapper objects.  This preserves
+    the exact interleaving the user specified (e.g. text, then image, then
+    more text) rather than separating them into a flat string + a ref-image
+    list.
+    """
+
+    def __init__(self, parent, parts, response=None, virtualroot=False, seed=None):
         self.level = parent.level + 1 if parent else 0
         self.turn = parent.turn + 1 if parent and not virtualroot else 0
         self.virtualroot = virtualroot
         self.local_id = len(parent.children) if parent else 0
         self.parent = parent
         self.children = []
-        assert prompt is not None, 'Prompt must not be None'
-        self.prompt = prompt
-        self.ref_imgs = ref_imgs
+        assert parts is not None, 'Parts must not be None'
+        self.parts = parts          # list[str | ImageWrapper]
         self.seed = seed
         self.response = response
         self.elapsed_sec = None
 
+    # ------------------------------------------------------------------
+    # Constructors
+    # ------------------------------------------------------------------
+
     @classmethod
-    def new_root(cls, prompt, ref_imgs=[]):
+    def new_root(cls, parts):
         """Root nodes are special in that they are never executed.
 
-        They're essentially just a placeholder for the prompt and ref_imgs which
-        the top-level children of the root node will use without any additions
-
+        They're essentially just a placeholder for the initial parts which
+        the top-level children of the root node will use without any additions.
         """
-        return GenNode(None, prompt, ref_imgs=ref_imgs)
+        return GenNode(None, parts)
 
     def create_virtualroot(self, ref_imgs):
         if self.is_root():
@@ -43,17 +59,21 @@ class GenNode:
         if not ref_imgs:
             raise ValueError(
                 'Must provide at least 1 reference image to initialize a virtual root')
-        child = GenNode(self, '', ref_imgs=ref_imgs, virtualroot=True)
+        child = GenNode(self, list(ref_imgs), virtualroot=True)
         self.children.append(child)
         return child
 
-    def create_child(self, prompt, ref_imgs=[], seed=None):
+    def create_child(self, parts, seed=None):
         if self.response is None and not self.is_root():
             raise RuntimeError(
                 'Attempted to create child of non-root node that has no response {self.id()}')
-        child = GenNode(self, prompt, ref_imgs=ref_imgs, seed=None)
+        child = GenNode(self, parts, seed=seed)
         self.children.append(child)
         return child
+
+    # ------------------------------------------------------------------
+    # Generation
+    # ------------------------------------------------------------------
 
     async def generate(self, client, image_config):
         if self.parent is None:
@@ -85,6 +105,10 @@ class GenNode:
         self.response = response
         self.elapsed_sec = elapsed_sec
 
+    # ------------------------------------------------------------------
+    # Tree helpers
+    # ------------------------------------------------------------------
+
     def is_root(self):
         return self.parent is None or self.virtualroot
 
@@ -100,27 +124,41 @@ class GenNode:
         if self.is_root():
             return []
         h = self.parent.history()
-        # Prompt content
         h.append(types.Content(
             role='user',
-            parts=[types.Part(text=self.prompt)] +
-            [img.as_google_genai_types_part() for img in self.ref_imgs]
+            parts=[_part_to_genai(p) for p in self.parts]
         ))
-        # Response content
         if self.response is not None:
             # TODO: needs update if we ever actually support multiple candidates
             h.append(self.response.candidates[0].content)
         return h
 
+    # ------------------------------------------------------------------
+    # Parts accessors (for display and command logic)
+    # ------------------------------------------------------------------
+
+    def _text(self) -> str:
+        """Concatenated text from all str parts."""
+        return ''.join(p if isinstance(p, str) else '<IMG>' for p in self.parts)
+
+    def _images(self) -> list:
+        """All image-wrapper parts, in order."""
+        return [p for p in self.parts if not isinstance(p, str)]
+
+    # ------------------------------------------------------------------
+    # Display
+    # ------------------------------------------------------------------
+
     def title(self, prompt_length=72):
-        if self.parent and self.parent.is_root() and self.prompt == self.parent.prompt:
+        text = self._text()
+        imgs = self._images()
+        if self.parent and self.parent.is_root() and text == self.parent._text():
             return f"{self.local_id}  [root -> generate]"
         id = 'BASE' if self.parent is None else self.local_id
         root = '[root]' if self.is_root() else ''
-        imgs = f"({len(self.ref_imgs)} ref img{'s' if len(self.ref_imgs) > 1 else ''})" if self.ref_imgs else ''
-        prompt = self.prompt[0:min(len(self.prompt), max(
-            12, prompt_length - 4 * self.level))]
-        return f"{id}  {root + ' ' if root else ''}{imgs + ' ' if imgs else ''}{prompt + ('...' if len(self.prompt) > len(prompt) else '')}"
+        imgs_label = f"({len(imgs)} ref img{'s' if len(imgs) > 1 else ''})" if imgs else ''
+        excerpt = text[0:min(len(text), max(12, prompt_length - 4 * self.level))]
+        return f"{id}  {root + ' ' if root else ''}{imgs_label + ' ' if imgs_label else ''}{excerpt + ('...' if len(text) > len(excerpt) else '')}"
 
     def print_summary(self, full=True):
         if full and not self.is_root() and not self.parent.is_root():
@@ -136,17 +174,17 @@ class GenNode:
         if not full:
             children = f"  (children = {len(self.children)})" if self.children else ''
             print(f"@{id}    turn = {self.turn}{children}")
-        if self.ref_imgs:
-            print(
-                f"+ {len(self.ref_imgs)} reference image{'s' if len(self.ref_imgs) > 1 else ''}")
-        prompt = self.prompt if self.prompt else '[empty prompt]'
-        print(textwrap.fill(prompt, width=80,
+        imgs = self._images()
+        if imgs:
+            print(f"+ {len(imgs)} reference image{'s' if len(imgs) > 1 else ''}")
+        text = self._text() or '[empty prompt]'
+        print(textwrap.fill(text, width=80,
               initial_indent='| ', subsequent_indent='| '))
 
     def print_prompt_history(self):
         if self.parent:
             self.parent.print_prompt_history()
-        print(textwrap.fill(self.prompt, width=80,
+        print(textwrap.fill(self._text(), width=80,
               initial_indent='  ', subsequent_indent='  '))
         print('')
 
@@ -177,12 +215,12 @@ class GenNode:
         if down:
             self.print_descendant_tree(include_self=False, prefix='   ')
 
+    # ------------------------------------------------------------------
+    # Image accessors
+    # ------------------------------------------------------------------
+
     def all_imgs(self):
-        imgs = []
-        if self.ref_imgs:
-            imgs += self.ref_imgs
-        imgs += self.generated_imgs()
-        return imgs
+        return self._images() + self.generated_imgs()
 
     def generated_imgs(self):
         imgs = []
