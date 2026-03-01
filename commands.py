@@ -3,6 +3,10 @@
 import asyncio
 from dataclasses import dataclass
 from typing import Optional, List, Any, TYPE_CHECKING
+from PIL import Image
+
+import prompt_ast
+from imagewrappers import PILImageWrapper
 
 if TYPE_CHECKING:
     from gennode import GenNode
@@ -25,15 +29,13 @@ class CommandResult:
 
 # These will be set by the main module to avoid circular imports
 HELP_TEXT: str = ''
-parse_prompt = None
 prompt_yn = None
 
 
-def init(help_text: str, parse_prompt_fn, prompt_yn_fn):
+def init(help_text: str, prompt_yn_fn):
     """Initialize module dependencies from main module."""
-    global HELP_TEXT, parse_prompt, prompt_yn
+    global HELP_TEXT, prompt_yn
     HELP_TEXT = help_text
-    parse_prompt = parse_prompt_fn
     prompt_yn = prompt_yn_fn
 
 
@@ -191,24 +193,24 @@ async def cmd_generate(args: List[str], node: 'GenNode', ctx: CommandContext,
 async def _execute_generation(prompt: str, ref_imgs: list, variations: int,
                               node: 'GenNode', ctx: CommandContext) -> CommandResult:
     """Execute the actual image generation after prompt is determined."""
-    # Parse prompt template
+    # Parse and expand prompt template
     try:
-        prompts = parse_prompt(prompt)
-    except ValueError as e:
+        variants = prompt_ast.expand(prompt_ast.parse(prompt))
+    except (ValueError, OSError) as e:
         print(e)
         print('Aborting generate, try again')
         return CommandResult(node=node)
 
     # Print summary of variants
-    if len(prompts) > 1:
+    if len(variants) > 1:
         print('\nPrompt variants:')
-        for i, p in enumerate(prompts):
-            print(f" {i}  {p}")
+        for i, v in enumerate(variants):
+            print(f" {i}  {prompt_ast.format_variant(v)}")
 
-    variations_text = f" {variations} variations{' of each prompt variant' if len(prompts) > 1 else ''}" if variations > 1 else ''
+    variations_text = f" {variations} variations{' of each prompt variant' if len(variants) > 1 else ''}" if variations > 1 else ''
 
     # Optionally require user approval
-    gen_count = len(prompts) * variations
+    gen_count = len(variants) * variations
     if ctx.confirm_at is not None and gen_count >= ctx.confirm_at:
         if not prompt_yn(f"Confirm approval for generating {gen_count} images?"):
             print('Aborted before generating images')
@@ -217,9 +219,11 @@ async def _execute_generation(prompt: str, ref_imgs: list, variations: int,
     # Create child nodes and generate
     print(f"Generating{variations_text}...  ", end='', flush=True)
     new_children = []
-    for p in prompts:
+    for variant in variants:
+        prompt_text = ''.join(n.text for n in variant if isinstance(n, prompt_ast.TextNode))
+        prompt_imgs = [PILImageWrapper(Image.open(n.path)) for n in variant if isinstance(n, prompt_ast.ImageNode)]
         new_children.extend([
-            node.create_child(p, ref_imgs=ref_imgs, seed=None if i == 0 else i)
+            node.create_child(prompt_text, ref_imgs=ref_imgs + prompt_imgs, seed=None if i == 0 else i)
             for i in range(variations)
         ])
 

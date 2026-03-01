@@ -9,6 +9,7 @@ from PIL import Image
 
 import kittygraphics
 import commands
+import prompt_ast
 from imagewrappers import PILImageWrapper
 from gennode import GenNode
 
@@ -92,112 +93,6 @@ def prompt_yn(prompt):
     except KeyboardInterrupt:
         return False
 
-class ConsumableString:
-    def __init__(self, s):
-        self.idx = 0
-        self.s = s
-
-    def next(self):
-        if self.idx >= len(self.s):
-            return None
-        c = self.s[self.idx]
-        self.idx += 1
-        return c
-
-    def peek(self):
-        if self.idx >= len(self.s):
-            return None
-        return self.s[self.idx]
-
-def parse_ref(s : ConsumableString):
-    builder = []
-    escape_next = False
-    while (c := s.next()) is not None:
-        if escape_next:
-            builder.append(c)
-            escape_next = False
-        elif p == '\\':
-            escape_next = True
-            c.next()
-        elif p.isspace():
-            break;
-        else:
-            builder.append(c)
-    result = ''.join(builder)
-    # Handle image
-    ext = os.path.splitext(result)
-    if ext in ['.png', '.jpg', '.webp']
-        raise RuntimeError('Images not supported yet')
-    # Handle text
-    with open(result, 'r') as file:
-        return parse_prompt(file.read())
-
-def parse_prompt(template_prompt, outer=True):
-    """Return list of all concrete prompt variants described by the template
-    prompt,
-
-    i.e., expand all {A|B|C} blocks.
-
-    """
-    variants = [[]]
-    parts = []
-    builder = []
-    level = 0
-    escape_next = False
-    tp = ConsumableString(template_prompt)
-    while (c := tp.next()) is not None:
-        if escape_next:
-            builder.append(c)
-            escape_next = False
-        elif c == '\\':
-            escape_next = True
-        elif c == '{':
-            level += 1
-            if level > 1:
-                raise ValueError(
-                    'Prompt variant templates don\'t (yet) support nested variant blocks')
-            chunk = ''.join(builder)
-            for v in variants:
-                v.append(chunk)
-            builder = []
-        elif c == '}':
-            level -= 1
-            if level < 0:
-                raise ValueError(
-                    'Prompt parsing failed: Encountered unpaired }. Note that literal { or } characters must be escaped like \\{ or \\}')
-            # first finish the part
-            parts.append(''.join(builder))
-            builder = []
-            # then construct updated set of (partial) variants
-            old_variants = variants
-            variants = []
-            for v in old_variants:
-                for p in parts:
-                    variants.append(v + [p])
-            parts = []
-        elif c == '|':
-            if level == 0 and outer:
-                # don't treat | as a special character outside of {} blocks
-                builder.append(c)
-            else:
-                # | separates variants in a {} block
-                parts.append(''.join(builder))
-                builder = []
-        elif c == '@':
-            content = parse_ref(tp)
-            # TODO: Handle image context
-            builder.append(content)
-        else:
-            # All non-special characters are simply appended to the current chunk
-            builder.append(c)
-    if level != 0:
-        raise ValueError(
-            'Prompt parsing failed: Encountered unpaired {. Note that literal { or } characters must be escaped like \\{ or \\}')
-    chunk = ''.join(builder)
-    for v in variants:
-        v.append(chunk)
-    builder = []
-    return [''.join(v) for v in variants]
 
 async def interactive_session(client, image_config, node, confirm_at=None):
     """Process a single interactive command and return the new state."""
@@ -263,7 +158,7 @@ async def main():
     readline.parse_and_bind('tab: complete')
 
     # Initialize the commands module with dependencies
-    commands.init(HELP_TEXT, parse_prompt, prompt_yn)
+    commands.init(HELP_TEXT, prompt_yn)
 
     # Load any reference images now so that we fail early if they're missing
     ref_imgs = [PILImageWrapper(Image.open(path)) for path in args.img]
