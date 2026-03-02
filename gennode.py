@@ -11,7 +11,7 @@ from imagewrappers import GoogleGenAITypesImageWrapper
 def _part_to_genai(part) -> types.Part:
     """Convert a single parts-list entry to a google.genai types.Part."""
     if isinstance(part, str):
-        return types.Part(text=part)
+        return types.Part(text=part.strip())
     return part.as_google_genai_types_part()
 
 
@@ -271,7 +271,7 @@ class GenNode:
                             image.show()
                         if inline:
                             pil_img = GoogleGenAITypesImageWrapper(part).as_pil_image()
-                            w = min(600, pil_img.width)
+                            w = min(1024, pil_img.width)
                             pil_resized = pil_img.resize((w, int(pil_img.height / pil_img.width * w)))
                             kittygraphics.display_pil_image(pil_resized)
                 if n == 0:

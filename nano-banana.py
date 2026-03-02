@@ -13,7 +13,6 @@ from gennode import GenNode
 
 # TODO:
 #   - Record error nodes (and allow retries?)
-#   - Support supplying reference images as arguments to generate-family commands
 
 HELP_TEXT = """
 tl;dr:
@@ -132,24 +131,24 @@ def completer(text, state):
 async def main():
     parser = argparse.ArgumentParser(prog='nano-banana')
     parser.add_argument('--path', default=None,
-                        help='Directory for all output files; default creates a unique subdirectory')
+                        help='Directory for output files')
     parser.add_argument('--prefix', default='img',
-                        help='Filename prefix for all output images')
+                        help='Filename prefix for output images')
     parser.add_argument(
-        '--resolution', choices=['1K', '2K', '4K'], default='1K', help='Defaults to 1K')
+        '--resolution', choices=['1K', '2K', '4K'], default='1K', help='Default 1K')
     parser.add_argument(
         '--model', choices=['flash', 'pro'], default='flash',
-        help='Model to use: flash (gemini-3.1-flash-image-preview) or pro (gemini-3-pro-image-preview); default: flash')
+        help='Nano Banana model: flash (gemini-3.1-flash-image-preview) or pro (gemini-3-pro-image-preview); default: flash')
     parser.add_argument('--aspect_ratio', choices=[None, '1:1', '2:3', '3:2',
                         '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'], default=None)
     parser.add_argument('--show', action='store_true',
-                        help='Show generate image results')
+                        help='Display image result(s)')
     parser.add_argument('--noinline', action='store_true',
-                        help='Don\'t show image thumbnails inline in terminal using the Kitty graphics protocol')
+                        help='Skip inline image thumbnails (Kitty graphics protocol)')
     parser.add_argument('--prompt', default='',
                         help='Initial prompt; use @path/to/image.png to inline images, e.g. "paint @ref.png in {watercolor|oil} style"')
     parser.add_argument('--confirm-at', default=None,
-                        help='Threshold of simulatenous generate image calls that will ask for confirmation; default disables any limit')
+                        help='Threshold for simulatenous generates to require confirmation; default disabled')
     args = parser.parse_args()
 
     # Register the completer function and set the 'Tab' key for completion
@@ -180,7 +179,7 @@ async def main():
     prompt = args.prompt
     if not prompt:
         print('Provide a prompt for initial context')
-        print('  example: Baby t-rex with {faint scales|feathers} on a small pacific atoll. {Daytime|Moonless night with a brilliant aurora borealis}.,following its mother\'s huge indented footprints,Studio Ghibli inspired,cinematic lighting')
+        print('  example: Baby t-rex with {faint scales|feathers} on a small pacific atoll. {Daytime|Moonless night with a brilliant aurora borealis}.,following its mother\'s huge indented footprints,Studio Ghibli inspired,cinematic lighting\n')
         print('  tip: use @path/to/image.png anywhere in the prompt to inline a reference image\n')
         try:
             prompt = input(f"Prompt >> ").strip()
@@ -211,7 +210,6 @@ async def main():
     path = args.path
     if path is None:
         path = 'out-' + str(uuid.uuid4())[0:4]
-        print(f"Output path set to:  {path}")
     if path:
         os.makedirs(path, exist_ok=True if args.path else False)
     img_prefix = os.path.join(path, args.prefix)
@@ -223,7 +221,8 @@ async def main():
         prev_node = None
         # Start the interactive command loop
         print(f"\n--- Interactive Nano Banana Shell (Crl+D to quit) ---")
-        print(f"    Model: {model_id}\n")
+        print(f"    Model: {model_id}")
+        print(f"    Output path:  {path}" + os.path.sep + "\n")
         while node is not None:
             if node != prev_node:
                 node.print_summary(full=False)
