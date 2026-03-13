@@ -142,7 +142,7 @@ async def main():
     parser.add_argument('--aspect_ratio', choices=[None, '1:1', '2:3', '3:2',
                         '3:4', '4:3', '4:5', '5:4', '9:16', '16:9', '21:9'], default=None)
     parser.add_argument('--show', action='store_true',
-                        help='Display image result(s)')
+                        help='Show image results after generating')
     parser.add_argument('--noinline', action='store_true',
                         help='Skip inline image thumbnails (Kitty graphics protocol)')
     parser.add_argument('--prompt', default='',
