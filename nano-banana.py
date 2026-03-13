@@ -147,7 +147,7 @@ async def main():
                         help='Skip inline image thumbnails (Kitty graphics protocol)')
     parser.add_argument('--prompt', default='',
                         help='Initial prompt; use @path/to/image.png to inline images, e.g. "paint @ref.png in {watercolor|oil} style"')
-    parser.add_argument('--confirm-at', default=None,
+    parser.add_argument('--confirm', default=None,
                         help='Threshold for simulatenous generates to require confirmation; default disabled')
     args = parser.parse_args()
 
@@ -228,7 +228,7 @@ async def main():
                 node.print_summary(full=False)
                 prev_node = node
                 print('')
-            node, out = await interactive_session(client, image_config, model_id, node, confirm_at=args.confirm_at)
+            node, out = await interactive_session(client, image_config, model_id, node, confirm_at=args.confirm)
             if out:
                 # Output all newly generated nodes
                 for n in out:
